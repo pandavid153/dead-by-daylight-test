@@ -72,8 +72,8 @@ class Game {
     NAMES.forEach((name, index) => this.makeSurvivor(name, index));
     this.makeKiller();
     this.player = role === 'killer' ? this.killer : this.survivors[0];
-    if (role === 'killer') this.generators.forEach(generator => generator.mesh.material.emissive.set(0x315c70));
-    $('#role').textContent = `PLAYING AS ${role.toUpperCase()}`;
+    if (this.role === 'killer') this.generators.forEach(generator => generator.mesh.material.emissive.set(0x315c70));
+    $('#role').textContent = `PLAYING AS ${this.role.toUpperCase()}`;
   }
 
   clearPosition(minEdge = 7, minDistance = 7) {
