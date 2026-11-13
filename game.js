@@ -79,8 +79,11 @@ class Game {
   clearPosition(minEdge = 7, minDistance = 7) {
     let point;
     const objects = [...this.walls, ...this.generators, ...this.gates, ...this.hooks];
-    do point = vec((Math.random() - .5) * (96 - minEdge * 2), (Math.random() - .5) * (96 - minEdge * 2));
-    while (objects.some(object => object.pos.distanceTo(point) < minDistance));
+    for (let attempt = 0; attempt < 150; attempt++) {
+      point = vec((Math.random() - .5) * (96 - minEdge * 2), (Math.random() - .5) * (96 - minEdge * 2));
+      if (!objects.some(object => object.pos.distanceTo(point) < minDistance)) return point;
+    }
+    // Never block match initialization if procedural placement becomes crowded.
     return point;
   }
 
