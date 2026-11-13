@@ -4,8 +4,29 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Dead By Daylight Test</title>
+    <link rel="stylesheet" href="style.css">
   </head>
   <body>
-    <h1>Dead By Daylight Test</h1>
+    <main id="lobby">
+      <p class="eyebrow">ASYMMETRICAL PROTOTYPE</p>
+      <h1>Dead By Daylight<br><span>Test</span></h1>
+      <p class="intro">Four survivors. One hunter. Repair five generators, open a gate, and escape.</p>
+      <div class="role-choice">
+        <button data-role="survivor"><strong>SURVIVOR</strong><small>Repair, evade, rescue</small></button>
+        <button data-role="killer"><strong>KILLER</strong><small>Hunt, down, sacrifice</small></button>
+      </div>
+      <p class="controls">WASD move &middot; Shift sprint (survivor) &middot; Ctrl crouch &middot; Mouse look &middot; Left click interact/attack &middot; Space pickup, hook, break</p>
+    </main>
+    <div id="game" hidden>
+      <canvas id="world"></canvas>
+      <div id="crosshair">+</div>
+      <div id="top"><span id="role"></span><span id="objective"></span><span id="timer">00:00</span></div>
+      <div id="prompt"></div>
+      <div id="action"><label id="action-label"></label><div><i></i></div></div>
+      <section id="roster"></section>
+      <aside id="legend"><b>CONTROLS</b><br>WASD: move<br>SHIFT: sprint<br>CTRL: crouch<br>CLICK: action / strike<br>SPACE: special action</aside>
+      <div id="result" hidden><p id="result-kicker">MATCH OVER</p><h2 id="result-title"></h2><button id="again">RETURN TO LOBBY</button></div>
+    </div>
+    <script type="module" src="game.js"></script>
   </body>
 </html>

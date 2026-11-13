@@ -1,0 +1,23 @@
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700&family=Rajdhani:wght@500;600;700&display=swap');
+
+* { box-sizing: border-box; }
+body { margin: 0; overflow: hidden; background: #080b09; color: #e6e6dd; font-family: Rajdhani, sans-serif; }
+button { font: inherit; cursor: pointer; }
+#lobby { min-height: 100vh; display: grid; place-content: center; text-align: center; background: radial-gradient(circle at 50% 25%, #273128, #0b100c 55%, #050605); padding: 24px; }
+.eyebrow { color: #d1ad4d; font-size: 13px; letter-spacing: 5px; margin: 0 0 12px; }
+h1 { font: 700 clamp(54px, 9vw, 110px)/.8 'Barlow Condensed', sans-serif; letter-spacing: -3px; text-transform: uppercase; margin: 0; color: #eae6d7; text-shadow: 0 5px 30px #000; }
+h1 span { color: #b82828; }
+.intro { max-width: 430px; color: #a7afa3; font-size: 18px; margin: 26px auto; }
+.role-choice { display: flex; justify-content: center; gap: 12px; }
+.role-choice button, #again { border: 1px solid #4b5148; background: #161b17; color: #e5e5de; width: 190px; padding: 18px; transition: .15s; }
+.role-choice button:hover, #again:hover { border-color: #d1ad4d; background: #242b24; transform: translateY(-2px); }
+.role-choice strong { display: block; font: 700 27px 'Barlow Condensed'; letter-spacing: 1px; }.role-choice small { color: #9ba494; }
+.controls { max-width: 620px; margin: 30px auto 0; color: #6e776d; font-size: 13px; }
+#world { display: block; width: 100vw; height: 100vh; } #top { position: fixed; inset: 20px 26px auto; display:flex; justify-content:space-between; text-shadow: 0 2px 4px #000; font-size: 18px; letter-spacing: 1px; } #role { color:#d1ad4d; font-weight:700; } #objective { text-align:center; } #timer { font-family:monospace; }
+#crosshair { position:fixed; left:50%; top:50%; font-size:25px; transform:translate(-50%,-50%); text-shadow:0 1px 3px #000; pointer-events:none; }
+#prompt { position:fixed; bottom:105px; left:50%; transform:translateX(-50%); min-height:24px; color:#f2d986; font-size:17px; text-shadow:0 2px 2px #000; }
+#action { position:fixed; bottom:75px; left:50%; transform:translateX(-50%); width:240px; text-align:center; opacity:0; transition:.1s; } #action.on { opacity:1; } #action label { display:block; font-size:13px; text-transform:uppercase; letter-spacing:2px; margin-bottom:5px; } #action div { height:7px; background:#222; border:1px solid #707168; } #action i { display:block; height:100%; width:0; background:#caa13c; }
+#roster { position:fixed; left:25px; bottom:25px; display:flex; gap:8px; }.card { position:relative; width:62px; height:73px; background:#171a18; border:1px solid #5a5c53; display:grid; place-items:center; font:700 25px 'Barlow Condensed'; }.card.injured { background:linear-gradient(135deg,#42130f,#161a17 65%); }.card.dying { border-color:#9b2820; color:#cc4336; }.card.hooked { border-color:#b4a071; color:#e1ca91; }.card.dead { color:#777; }.marks { position:absolute; bottom:2px; font-size:11px; color:#d1ad4d; }.hookbar { position:absolute; bottom:-5px; left:0; height:3px; background:#c7a354; }
+#legend { position:fixed; right:25px; bottom:24px; text-align:right; color:#a8aca5; font-size:12px; line-height:1.35; text-shadow:0 1px 2px #000; } #legend b { color:#d5d4ca; font-size:13px; letter-spacing:1px; }
+#result { position:fixed; inset:0; display:grid; place-content:center; text-align:center; background:rgba(4,6,5,.86); } #result p { color:#c2a453; letter-spacing:4px; margin:0; } #result h2 { font:700 70px 'Barlow Condensed'; margin:6px 0 24px; } #again { margin:auto; }
+@media (max-width:600px) { #top { inset:14px; font-size:13px; } #legend { display:none; } .role-choice { flex-direction:column; align-items:center; } }
