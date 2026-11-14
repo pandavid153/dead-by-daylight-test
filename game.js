@@ -49,6 +49,7 @@ class Game {
     this.survivors = [];
     this.traces = [];
     this.spawnPositions = [];
+    this.tileCenters = [];
     this.setupWorld();
     this.setupInput();
   }
@@ -74,7 +75,14 @@ class Game {
     NAMES.forEach((name, index) => this.makeSurvivor(name, index));
     this.makeKiller();
     this.player = this.role === 'killer' ? this.killer : this.survivors[0];
-    if (this.role === 'killer') this.killer.mesh.visible = false;
+    if (this.role === 'killer') {
+      this.killer.mesh.visible = false;
+      this.weaponView = new THREE.Mesh(new THREE.BoxGeometry(.09, .09, 1.3), new THREE.MeshStandardMaterial({ color: 0xc9d0d3, metalness: .9, roughness: .2 }));
+      this.weaponView.position.set(.42, -.32, -.75);
+      this.weaponView.rotation.z = -.35;
+      this.camera.add(this.weaponView);
+      this.scene.add(this.camera);
+    }
     if (this.role === 'killer') this.generators.forEach(generator => { generator.mesh.material.emissive.set(0x315c70); generator.aura.visible = true; });
     $('#role').textContent = `PLAYING AS ${this.role.toUpperCase()}`;
   }
@@ -108,9 +116,11 @@ class Game {
   }
 
   addTiles() {
-    for (let index = 0; index < 14; index++) {
-      const p = this.clearPosition(12, 12);
-      const form = index % 4;
+    for (let index = 0; index < 10; index++) {
+      let p = this.clearPosition(14, 14);
+      for (let attempt = 0; attempt < 80 && this.tileCenters.some(center => center.distanceTo(p) < 19); attempt++) p = vec((Math.random() - .5) * 64, (Math.random() - .5) * 64);
+      this.tileCenters.push(p.clone());
+      const form = index % 5;
       if (form === 0) {
         this.addWall(p.clone().add(vec(-2.5, 0)), 1, 9);
         this.addWall(p.clone().add(vec(2, 3.5)), 8, 1);
@@ -121,7 +131,12 @@ class Game {
         this.addWall(p.clone().add(vec(-3, 0)), 1, 8);
         this.addWall(p.clone().add(vec(3, 0)), 1, 8);
         this.addWall(p.clone().add(vec(0, -3.5)), 7, 1);
-      } else this.addWall(p, 7, 4);
+      } else if (form === 3) this.addWall(p, 7, 4);
+      else {
+        this.addWall(p.clone().add(vec(-4, -3)), 8, 1);
+        this.addWall(p.clone().add(vec(4, 3)), 8, 1);
+        this.addWall(p.clone().add(vec(-7.5, 0)), 1, 7);
+      }
       this.addWindow(p.clone().add(vec(4.5, 0)), index % 2 === 0 ? 0 : Math.PI / 2);
       this.addPallet(p.clone().add(vec(-4.5, 0)), index % 2 === 0 ? 0 : Math.PI / 2);
     }
@@ -235,10 +250,16 @@ class Game {
     const rightLeg = leftLeg.clone();
     leftLeg.position.set(-.2, .48, 0);
     rightLeg.position.set(.2, .48, 0);
+    let weapon;
+    if (type === 'killer') {
+      weapon = new THREE.Mesh(new THREE.BoxGeometry(.1, .1, 1.25), new THREE.MeshStandardMaterial({ color: 0xb8bbc0, metalness: .85, roughness: .28 }));
+      weapon.position.set(0, -.42, -.55);
+      rightArm.add(weapon);
+    }
     group.add(body, head, leftArm, rightArm, leftLeg, rightLeg);
     group.position.copy(pos);
     this.scene.add(group);
-    return { name, type, mesh: group, body, head, arms: [leftArm, rightArm], legs: [leftLeg, rightLeg], pos: group.position, state: 'active', health: 'healthy', marks: 0, cooldown: 0, healProgress: 0, hookTime: 0, bleed: 0, stun: 0, animation: 'idle', animationTime: 0 };
+    return { name, type, mesh: group, body, head, arms: [leftArm, rightArm], legs: [leftLeg, rightLeg], weapon, pos: group.position, state: 'active', health: 'healthy', marks: 0, cooldown: 0, healProgress: 0, hookTime: 0, bleed: 0, stun: 0, animation: 'idle', animationTime: 0 };
   }
 
   makeSurvivor(name, index) {
@@ -272,7 +293,7 @@ class Game {
     });
     addEventListener('mousemove', event => {
       if (document.pointerLockElement !== canvas) return;
-    this.yaw += event.movementX * .0025;
+    this.yaw -= event.movementX * .0025;
       this.pitch = clamp(this.pitch - event.movementY * .0025, -1.1, .12);
     });
   }
@@ -280,11 +301,15 @@ class Game {
   move(actor, direction, speed, dt) {
     if (actor.state !== 'active' || actor.stun > 0 || !direction.length()) return false;
     const next = actor.pos.clone().addScaledVector(direction.normalize(), speed * dt);
-    if (Math.abs(next.x) > 47 || Math.abs(next.z) > 47 || this.walls.some(w => w.active && Math.abs(next.x - w.pos.x) < w.width / 2 + .42 && Math.abs(next.z - w.pos.z) < w.depth / 2 + .42)) return false;
+    if (this.isBlocked(next)) return false;
     actor.pos.copy(next);
     actor.mesh.rotation.y = Math.atan2(direction.x, direction.z);
     actor.walking = true;
     return true;
+  }
+
+  isBlocked(point) {
+    return Math.abs(point.x) > 47 || Math.abs(point.z) > 47 || this.walls.some(wall => wall.active && Math.abs(point.x - wall.pos.x) < wall.width / 2 + .42 && Math.abs(point.z - wall.pos.z) < wall.depth / 2 + .42);
   }
 
   moveToward(actor, target, speed, dt) {
@@ -304,15 +329,8 @@ class Game {
     const direction = vec();
     if (this.keys.KeyW) direction.add(forward);
     if (this.keys.KeyS) direction.sub(forward);
-    // Three.js camera space is mirrored when looking toward positive Z.
-    // Killer strafing follows the on-screen left/right direction.
-    if (player.type === 'killer') {
-      if (this.keys.KeyA) direction.add(right);
-      if (this.keys.KeyD) direction.sub(right);
-    } else {
-      if (this.keys.KeyA) direction.sub(right);
-      if (this.keys.KeyD) direction.add(right);
-    }
+    if (this.keys.KeyA) direction.sub(right);
+    if (this.keys.KeyD) direction.add(right);
     let speed = player.type === 'killer' ? 4.6 : 2.2;
     if (player.type === 'survivor') {
       if (this.keys.ControlLeft || this.keys.ControlRight) speed = 1.3;
@@ -375,7 +393,7 @@ class Game {
       const action = this.startAction('OPENING EXIT GATE', 15, gate, () => { gate.open = true; gate.mesh.material.emissive.set(0x2d9e40); });
       this.progressAction(dt);
     } else if (hooked) {
-      const action = this.startAction('UNHOOKING', 1, hooked, () => { hooked.state = 'active'; hooked.health = 'injured'; hooked.body.material.emissive.set(0xa32620); });
+      const action = this.startAction('UNHOOKING', 2, hooked, () => { hooked.state = 'active'; hooked.health = 'injured'; hooked.body.material.emissive.set(0xa32620); });
       this.progressAction(dt);
     } else if (dying) {
       const action = this.startAction('REVIVING', 15, dying, () => { dying.health = 'injured'; dying.body.material.emissive.set(0xa32620); });
@@ -390,6 +408,7 @@ class Game {
   repair(generator, survivor, dt) {
     const workers = this.survivors.filter(item => item.state === 'active' && item.pos.distanceTo(generator.pos) < 2 && item.repairing === generator);
     if (!workers.includes(survivor)) workers.push(survivor);
+    generator.workers = workers;
     survivor.repairing = generator;
     survivor.animation = 'repair';
     const rate = (1 + .15 * Math.min(2, workers.length - 1)) / 100;
@@ -434,9 +453,10 @@ class Game {
     const player = this.player;
     if (player.type === 'survivor') {
       const window = this.nearest(this.windows, player, 1.8);
-      const pallet = this.nearest(this.pallets.filter(item => item.state === 'upright'), player, 1.8);
+      const pallet = this.nearest(this.pallets.filter(item => item.state === 'upright' || item.state === 'dropped'), player, 1.8);
       if (window) this.vault(player, window, 1);
-      else if (pallet) this.dropPallet(pallet);
+      else if (pallet?.state === 'upright') this.dropPallet(pallet);
+      else if (pallet) this.vault(player, pallet, .7);
       return;
     }
     const carried = player.carrying;
@@ -444,7 +464,7 @@ class Game {
     const dying = this.nearest(this.survivors.filter(item => item.health === 'dying' && item.state === 'active'), player);
     const pallet = this.nearest(this.pallets.filter(item => item.state === 'dropped'), player);
     const window = this.nearest(this.windows, player, 1.8);
-    if (carried && hook) this.hookSurvivor(carried, hook);
+    if (carried && hook) this.startAction('HOOKING SURVIVOR', 2, hook, () => this.hookSurvivor(carried, hook));
     else if (dying) this.pickup(dying);
     else if (pallet) this.breakPallet(pallet);
     else if (window) this.vault(player, window, 1.5);
@@ -455,7 +475,13 @@ class Game {
     actor.vaulting = true;
     actor.stun = seconds;
     const direction = vec(Math.sin(window.rotation), Math.cos(window.rotation));
-    setTimeout(() => { actor.pos.addScaledVector(direction, actor.type === 'killer' ? 1.6 : 2); actor.vaulting = false; }, seconds * 1000);
+    setTimeout(() => {
+      const distance = actor.type === 'killer' ? 1.7 : 2.2;
+      const choices = [direction, direction.clone().negate(), vec(direction.z, -direction.x), vec(-direction.z, direction.x)];
+      const landing = choices.map(choice => actor.pos.clone().addScaledVector(choice, distance)).find(point => !this.isBlocked(point));
+      if (landing) actor.pos.copy(landing);
+      actor.vaulting = false;
+    }, seconds * 1000);
   }
 
   dropPallet(pallet) {
@@ -526,7 +552,7 @@ class Game {
     this.killer.animationTime = 0;
     survivor.state = 'hooked';
     survivor.marks++;
-    survivor.hookTime = 90;
+    survivor.hookTime = survivor.marks === 2 ? 45 : 90;
     survivor.pos.copy(hook.pos);
     survivor.mesh.rotation.z = 0;
     survivor.mesh.visible = true;
@@ -542,9 +568,16 @@ class Game {
       const hooked = this.survivors.find(item => item.state === 'hooked');
       const dying = this.survivors.find(item => item.health === 'dying' && item !== survivor);
       const injured = this.survivors.find(item => item.health === 'injured' && item !== survivor);
-      const objective = this.completed >= 5 ? this.gates.find(item => !item.open) : this.generators.filter(item => !item.done).sort((a, b) => a.pos.distanceTo(survivor.pos) - b.pos.distanceTo(survivor.pos))[0];
+      const unfinished = this.generators.filter(item => !item.done);
+      if (!survivor.preferredGenerator || survivor.preferredGenerator.done || (survivor.preferredGenerator.workers?.length || 0) >= 3) {
+        survivor.preferredGenerator = unfinished.sort((a, b) => {
+          const crowd = (a.workers?.length || 0) - (b.workers?.length || 0);
+          return crowd || a.pos.distanceTo(survivor.pos) - b.pos.distanceTo(survivor.pos);
+        })[0];
+      }
+      const objective = this.completed >= 5 ? this.gates.find(item => !item.open) : survivor.preferredGenerator;
       let target = objective;
-      if (!threat && hooked && this.killer.pos.distanceTo(hooked.pos) > 14) target = hooked;
+      if (!threat && hooked && this.killer.pos.distanceTo(hooked.pos) > 14 && (hooked.hookTime < 65 || Math.random() < dt * .5)) target = hooked;
       else if (!threat && dying) target = dying;
       else if (!threat && injured) target = injured;
       if (threat) this.moveToward(survivor, survivor.pos.clone().sub(this.killer.pos).multiplyScalar(2), 4, dt);
@@ -625,6 +658,12 @@ class Game {
     if (this.player.type === 'killer') {
       this.camera.position.copy(this.player.pos).add(new THREE.Vector3(0, 2.05, 0));
       this.camera.lookAt(this.camera.position.clone().add(forward).add(new THREE.Vector3(0, Math.sin(this.pitch) * 1.2, 0)));
+      if (this.weaponView) {
+        const animation = this.player.animation;
+        const swing = animation === 'swing' || animation === 'lunge' ? Math.min(this.player.animationTime * 7, 1) : 0;
+        this.weaponView.rotation.x = -swing * 1.5 + (this.player.stun > 0 ? Math.sin(this.time * 16) * .35 : 0);
+        this.weaponView.rotation.z = -.35 + swing * .8;
+      }
       return;
     }
     const cameraPos = this.player.pos.clone().addScaledVector(forward, -6.5).add(new THREE.Vector3(0, 1.9, 0));
