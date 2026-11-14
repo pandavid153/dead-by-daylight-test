@@ -571,21 +571,9 @@ class Game {
   }
 
   repair(generator, survivor, dt) {
-    const workers = this.survivors.filter(item => item.state === 'active' && item.pos.distanceTo(generator.pos) < 2 && item.repairing === generator);
-    if (!workers.includes(survivor)) workers.push(survivor);
-    generator.workers = workers;
-    if (survivor === this.player && (!generator.lastSound || this.time - generator.lastSound > .7)) { generator.lastSound = this.time; this.sound('repair'); }
+    if (generator.done) return;
     survivor.repairing = generator;
     survivor.animation = 'repair';
-    generator.touched += dt;
-    if (generator.touched >= 1) generator.damageable = true;
-    const rate = (1 + .15 * Math.min(2, workers.length - 1)) / 100;
-    generator.progress = clamp(generator.progress + rate * dt, 0, 1);
-    if (generator.mesh.pump) generator.mesh.pump.rotation.x += dt * (2 + generator.progress * 14) * workers.length;
-    generator.nextSkill -= dt;
-    if (generator.nextSkill < .7 && generator.nextSkill > 0 && !generator.skillWarned && survivor.isPlayer) { generator.skillWarned = true; this.sound('signal'); }
-    if (generator.nextSkill <= 0 && survivor.isPlayer && !this.skill) this.startSkill(generator);
-    if (generator.progress >= 1) this.completeGenerator(generator);
   }
 
   startSkill(generator) {
@@ -709,7 +697,7 @@ class Game {
 
   hit(survivor) {
     const killer = this.killer;
-    if (!survivor || killer.cooldown > 0) return;
+    if (!survivor || survivor.health === 'dying' || killer.cooldown > 0) return;
     killer.cooldown = killer.isPlayer ? 2 : 3;
     killer.animation = 'recovery';
     killer.animationTime = 0;
@@ -728,6 +716,7 @@ class Game {
   }
 
   pickup(survivor) {
+    survivor.state = 'pickup';
     this.startAction('PICKING UP SURVIVOR', 1, survivor, () => this.carrySurvivor(survivor));
   }
 
@@ -750,6 +739,7 @@ class Game {
     this.sound('hook');
     this.killer.animationTime = 0;
     survivor.state = 'hooked';
+    survivor.health = 'injured';
     survivor.hook = hook;
     hook.occupant = survivor;
     survivor.marks++;
@@ -821,7 +811,11 @@ class Game {
 
   updateAI(dt) {
     this.survivors.filter(item => !item.isPlayer && item.state === 'active').forEach(survivor => {
-      if (survivor.health === 'dying') { this.move(survivor, vec(Math.random() - .5, Math.random() - .5), .5, dt); return; }
+      if (survivor.health === 'dying') {
+        if (!survivor.crawlTarget || survivor.pos.distanceTo(survivor.crawlTarget) < 1) survivor.crawlTarget = survivor.pos.clone().add(vec(Math.random() - .5, Math.random() - .5).normalize().multiplyScalar(4));
+        this.navigate(survivor, survivor.crawlTarget, .5, dt);
+        return;
+      }
       const threat = this.killer.pos.distanceTo(survivor.pos) < 10;
       if (!survivor.goal || this.time >= survivor.nextDecision || survivor.goal.target.done || survivor.goal.target.state === 'dead') {
         survivor.goal = this.chooseSurvivorGoal(survivor);
@@ -862,14 +856,18 @@ class Game {
     });
     if (!this.killer.isPlayer && this.killer.state === 'active') {
       if (this.killer.carrying) { this.killer.aiState = 'carrying'; const hook = this.hooks.filter(item => !item.occupant).sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0]; if (hook) { this.navigate(this.killer, hook.pos, 3, dt); if (hook.pos.distanceTo(this.killer.pos) < 1.8) this.hookSurvivor(this.killer.carrying, hook); } return; }
+      if (this.killer.pickupTarget) {
+        this.killer.aiState = 'picking up';
+        if (this.time - this.killer.pickupAt >= 1) { const target = this.killer.pickupTarget; this.killer.pickupTarget = null; this.carrySurvivor(target); }
+        return;
+      }
       const dying = this.nearest(this.survivors.filter(item => item.health === 'dying' && item.state === 'active'), this.killer);
       if (dying) {
         this.killer.aiState = this.killer.cooldown > 0 ? 'attack recovery' : 'picking up';
         if (this.killer.cooldown > 0) return;
         this.navigate(this.killer, dying.pos, 4.6, dt);
         if (dying.pos.distanceTo(this.killer.pos) < 1.7) {
-          if (this.killer.pickupTarget !== dying) { this.killer.pickupTarget = dying; this.killer.pickupAt = this.time; this.killer.animation = 'pickup'; }
-          if (this.time - this.killer.pickupAt >= 1) { this.killer.pickupTarget = null; this.carrySurvivor(dying); }
+          if (this.killer.pickupTarget !== dying) { this.killer.pickupTarget = dying; dying.state = 'pickup'; this.killer.pickupAt = this.time; this.killer.animation = 'pickup'; }
         }
         return;
       }
@@ -947,7 +945,21 @@ class Game {
     [this.killer, ...this.survivors].forEach(actor => { this.animateActor(actor, dt); actor.walking = false; });
     this.traces = this.traces.filter(trace => { trace.time -= dt; trace.mesh.material.opacity = trace.time / 5; if (trace.time <= 0) { this.scene.remove(trace.mesh); return false; } return true; });
     this.generators.forEach(generator => {
-      if (generator.progress > 0 && generator.mesh.pump) generator.mesh.pump.rotation.x += dt * (.5 + generator.progress * 3);
+      const workers = this.survivors.filter(survivor => survivor.state === 'active' && survivor.repairing === generator && survivor.pos.distanceTo(generator.pos) < 2).slice(0, 4);
+      generator.workers = workers;
+      if (workers.length && !generator.done) {
+        // One shared generator value: 100%, 115%, 130%, 145% for 1-4 workers.
+        const combinedRate = (1 + .15 * (workers.length - 1)) / 100;
+        generator.progress = clamp(generator.progress + combinedRate * dt, 0, 1);
+        generator.touched += dt;
+        if (generator.touched >= 1) generator.damageable = true;
+        if (workers.includes(this.player) && (!generator.lastSound || this.time - generator.lastSound > .7)) { generator.lastSound = this.time; this.sound('repair'); }
+        generator.nextSkill -= dt;
+        if (workers.includes(this.player) && generator.nextSkill < .7 && generator.nextSkill > 0 && !generator.skillWarned) { generator.skillWarned = true; this.sound('signal'); }
+        if (workers.includes(this.player) && generator.nextSkill <= 0 && !this.skill) this.startSkill(generator);
+        if (generator.progress >= 1) this.completeGenerator(generator);
+      }
+      if (generator.progress > 0 && generator.mesh.pump) generator.mesh.pump.rotation.x += dt * (.5 + generator.progress * 3 + workers.length * 1.5);
       if (generator.alert > 0) { generator.alert -= dt; if (generator.alert <= 0 && !generator.done) generator.mesh.material.emissive.set(0); }
     });
     if (this.skill) { this.skill.elapsed += dt; $('#skill i').style.width = `${this.skill.elapsed * 100}%`; $('#skill b').style.left = `${this.skill.zone * 100}%`; if (this.skill.elapsed > 1) this.resolveSkill(); }
@@ -1001,6 +1013,8 @@ class Game {
   }
 
   checkEnd() {
+    const unableToAct = this.survivors.every(survivor => ['dead', 'hooked'].includes(survivor.state));
+    if (unableToAct) this.survivors.filter(survivor => survivor.state === 'hooked').forEach(survivor => { survivor.state = 'dead'; survivor.mesh.visible = false; if (survivor.hook) survivor.hook.occupant = null; });
     const remaining = this.survivors.filter(survivor => !['dead', 'escaped'].includes(survivor.state));
     if (!remaining.length) this.finish(this.survivors.some(survivor => survivor.state === 'escaped') ? 'SURVIVORS ESCAPED' : 'THE KILLER PREVAILED');
     this.gates.filter(gate => gate.open).forEach(gate => this.survivors.filter(survivor => survivor.state === 'active' && survivor.pos.distanceTo(gate.pos) < 2.4).forEach(survivor => { survivor.state = 'escaped'; survivor.mesh.visible = false; }));
