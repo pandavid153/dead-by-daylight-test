@@ -13,6 +13,7 @@ function start(role) {
   $('#lobby').hidden = true;
   $('#game').hidden = false;
   game = new Game(role);
+  window.dbdGame = game;
   game.run();
 }
 
@@ -21,7 +22,7 @@ class Game {
     this.role = role;
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x182019);
-    this.scene.fog = new THREE.Fog(0x182019, 28, 110);
+    this.scene.fog = new THREE.Fog(0x182019, 16, 58);
     this.camera = new THREE.PerspectiveCamera(68, innerWidth / innerHeight, 0.1, 160);
     this.renderer = new THREE.WebGLRenderer({ canvas: $('#world'), antialias: true });
     this.renderer.setSize(innerWidth, innerHeight);
@@ -71,8 +72,8 @@ class Game {
     this.addObjectives();
     NAMES.forEach((name, index) => this.makeSurvivor(name, index));
     this.makeKiller();
-    this.player = role === 'killer' ? this.killer : this.survivors[0];
-    if (this.role === 'killer') this.generators.forEach(generator => generator.mesh.material.emissive.set(0x315c70));
+    this.player = this.role === 'killer' ? this.killer : this.survivors[0];
+    if (this.role === 'killer') this.generators.forEach(generator => { generator.mesh.material.emissive.set(0x315c70); generator.aura.visible = true; });
     $('#role').textContent = `PLAYING AS ${this.role.toUpperCase()}`;
   }
 
@@ -88,9 +89,9 @@ class Game {
   }
 
   addWall(pos, width, depth) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, 2.8, depth), new THREE.MeshStandardMaterial({ color: 0x4b5045, roughness: .95 }));
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, 4.8, depth), new THREE.MeshStandardMaterial({ color: 0x363b33, roughness: .95 }));
     mesh.position.copy(pos);
-    mesh.position.y = 1.4;
+    mesh.position.y = 2.4;
     this.scene.add(mesh);
     const wall = { pos: pos.clone(), width, depth, mesh, active: true };
     this.walls.push(wall);
@@ -98,32 +99,44 @@ class Game {
   }
 
   addTiles() {
-    for (let index = 0; index < 20; index++) {
-      const p = this.clearPosition(10, 9);
+    for (let index = 0; index < 14; index++) {
+      const p = this.clearPosition(12, 12);
       const form = index % 4;
       if (form === 0) {
-        this.addWall(p.clone().add(vec(-2, 0)), 1, 7);
-        this.addWall(p.clone().add(vec(1.5, 2.5)), 6, 1);
+        this.addWall(p.clone().add(vec(-2.5, 0)), 1, 9);
+        this.addWall(p.clone().add(vec(2, 3.5)), 8, 1);
       } else if (form === 1) {
-        this.addWall(p, 7, 1);
-        this.addWall(p.clone().add(vec(0, 3)), 1, 6);
+        this.addWall(p, 9, 1);
+        this.addWall(p.clone().add(vec(0, 4)), 1, 8);
       } else if (form === 2) {
-        this.addWall(p.clone().add(vec(-2, 0)), 1, 6);
-        this.addWall(p.clone().add(vec(2, 0)), 1, 6);
-        this.addWall(p.clone().add(vec(0, -2.5)), 5, 1);
-      } else this.addWall(p, 5, 3);
-      this.addWindow(p.clone().add(vec(3, 0)), index % 2 === 0 ? 0 : Math.PI / 2);
-      this.addPallet(p.clone().add(vec(-3, 0)), index % 2 === 0 ? 0 : Math.PI / 2);
+        this.addWall(p.clone().add(vec(-3, 0)), 1, 8);
+        this.addWall(p.clone().add(vec(3, 0)), 1, 8);
+        this.addWall(p.clone().add(vec(0, -3.5)), 7, 1);
+      } else this.addWall(p, 7, 4);
+      this.addWindow(p.clone().add(vec(4.5, 0)), index % 2 === 0 ? 0 : Math.PI / 2);
+      this.addPallet(p.clone().add(vec(-4.5, 0)), index % 2 === 0 ? 0 : Math.PI / 2);
     }
   }
 
   addWindow(pos, rotation) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.2, .18), new THREE.MeshStandardMaterial({ color: 0x8fbece, emissive: 0x173744, transparent: true, opacity: .8 }));
-    mesh.position.copy(pos);
-    mesh.position.y = 1.35;
-    mesh.rotation.y = rotation;
-    this.scene.add(mesh);
-    this.windows.push({ pos, mesh, rotation });
+    const frame = new THREE.Group();
+    const material = new THREE.MeshStandardMaterial({ color: 0x8a6b43, roughness: .9 });
+    [-1.1, 1.1].forEach(x => { const post = new THREE.Mesh(new THREE.BoxGeometry(.18, 3.2, .28), material); post.position.set(x, 1.6, 0); frame.add(post); });
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(2.4, .25, .28), material);
+    lintel.position.y = 3.15;
+    frame.add(lintel);
+    frame.position.copy(pos);
+    frame.rotation.y = rotation;
+    this.scene.add(frame);
+    // A window is a gap between two wall sections, not a solid panel.
+    if (rotation === 0) {
+      this.addWall(pos.clone().add(vec(-3.2, 0)), 4, .7);
+      this.addWall(pos.clone().add(vec(3.2, 0)), 4, .7);
+    } else {
+      this.addWall(pos.clone().add(vec(0, -3.2)), .7, 4);
+      this.addWall(pos.clone().add(vec(0, 3.2)), .7, 4);
+    }
+    this.windows.push({ pos, mesh: frame, rotation });
   }
 
   addPallet(pos, rotation) {
@@ -137,11 +150,32 @@ class Game {
   }
 
   addObjective(pos, color, type) {
-    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(.9, .9, 2.25, 8), new THREE.MeshStandardMaterial({ color, emissive: 0x000000, roughness: .7 }));
+    const mesh = type === 'gate'
+      ? new THREE.Mesh(new THREE.BoxGeometry(5, 4.8, .8), new THREE.MeshStandardMaterial({ color, emissive: 0x000000, roughness: .7 }))
+      : new THREE.Mesh(new THREE.CylinderGeometry(.9, .9, 2.25, 8), new THREE.MeshStandardMaterial({ color, emissive: 0x000000, roughness: .7 }));
     mesh.position.copy(pos);
-    mesh.position.y = 1.125;
+    mesh.position.y = type === 'gate' ? 2.4 : 1.125;
+    if (type === 'generator') {
+      const motor = new THREE.Mesh(new THREE.BoxGeometry(1.45, .45, .65), new THREE.MeshStandardMaterial({ color: 0x20251f, roughness: .75 }));
+      motor.position.y = .8;
+      const pump = new THREE.Mesh(new THREE.CylinderGeometry(.22, .22, .9, 10), new THREE.MeshStandardMaterial({ color: 0xb69040, emissive: 0x2c2109 }));
+      pump.rotation.z = Math.PI / 2;
+      pump.position.set(0, 1.25, 0);
+      mesh.add(motor, pump);
+      mesh.pump = pump;
+    }
+    if (type === 'gate') {
+      [-1.9, 1.9].forEach(x => { const post = new THREE.Mesh(new THREE.BoxGeometry(.35, 5.4, .35), new THREE.MeshStandardMaterial({ color: 0x28231b, roughness: .85 })); post.position.set(x, 0, 0); mesh.add(post); });
+    }
     this.scene.add(mesh);
-    return { pos: pos.clone(), mesh, type };
+    const aura = new THREE.Mesh(new THREE.RingGeometry(1.15, 1.45, 20), new THREE.MeshBasicMaterial({ color: 0x5da9d1, transparent: true, opacity: .78, side: THREE.DoubleSide, depthTest: false, depthWrite: false }));
+    aura.position.copy(pos);
+    aura.position.y = type === 'gate' ? 6.3 : 3.7;
+    aura.rotation.x = -Math.PI / 2;
+    aura.visible = false;
+    aura.renderOrder = 10;
+    this.scene.add(aura);
+    return { pos: pos.clone(), mesh, aura, type };
   }
 
   addObjectives() {
@@ -153,6 +187,8 @@ class Game {
     [[-41, -35], [41, 35]].forEach(([x, z]) => {
       const gate = this.addObjective(vec(x, z), 0x876331, 'gate');
       Object.assign(gate, { progress: 0, open: false });
+      gate.aura.material.color.set(0xa04a39);
+      gate.aura.visible = true;
       this.gates.push(gate);
     });
     for (let index = 0; index < 16; index++) {
@@ -203,17 +239,26 @@ class Game {
     });
     addEventListener('mousemove', event => {
       if (document.pointerLockElement !== canvas) return;
-      this.yaw -= event.movementX * .0025;
+    this.yaw += event.movementX * .0025;
       this.pitch = clamp(this.pitch - event.movementY * .0025, -1.1, .12);
     });
   }
 
   move(actor, direction, speed, dt) {
-    if (actor.state !== 'active' || actor.stun > 0 || !direction.length()) return;
+    if (actor.state !== 'active' || actor.stun > 0 || !direction.length()) return false;
     const next = actor.pos.clone().addScaledVector(direction.normalize(), speed * dt);
-    if (Math.abs(next.x) > 47 || Math.abs(next.z) > 47 || this.walls.some(w => w.active && Math.abs(next.x - w.pos.x) < w.width / 2 + .42 && Math.abs(next.z - w.pos.z) < w.depth / 2 + .42)) return;
+    if (Math.abs(next.x) > 47 || Math.abs(next.z) > 47 || this.walls.some(w => w.active && Math.abs(next.x - w.pos.x) < w.width / 2 + .42 && Math.abs(next.z - w.pos.z) < w.depth / 2 + .42)) return false;
     actor.pos.copy(next);
     actor.mesh.rotation.y = Math.atan2(direction.x, direction.z);
+    actor.walking = true;
+    return true;
+  }
+
+  moveToward(actor, target, speed, dt) {
+    const direction = target.clone().sub(actor.pos);
+    if (this.move(actor, direction, speed, dt)) return;
+    const side = vec(-direction.z, direction.x);
+    if (!this.move(actor, side, speed, dt)) this.move(actor, side.negate(), speed, dt);
   }
 
   playerMove(dt) {
@@ -301,7 +346,7 @@ class Game {
     survivor.repairing = generator;
     const rate = (1 + .15 * Math.min(2, workers.length - 1)) / 100;
     generator.progress = clamp(generator.progress + rate * dt, 0, 1);
-    generator.mesh.rotation.y += dt * workers.length * 2.8;
+    if (generator.mesh.pump) generator.mesh.pump.rotation.x += dt * (2 + generator.progress * 14) * workers.length;
     generator.nextSkill -= dt;
     if (generator.nextSkill <= 0 && survivor.isPlayer && !this.skill) this.startSkill(generator);
     if (generator.progress >= 1) this.completeGenerator(generator);
@@ -329,8 +374,10 @@ class Game {
   completeGenerator(generator) {
     if (generator.done) return;
     generator.done = true;
+    generator.aura.visible = false;
     generator.mesh.material.emissive.set(0xd2b039);
     this.completed++;
+    if (this.completed >= 5) this.gates.forEach(gate => { gate.aura.material.color.set(0xd0b143); gate.aura.visible = true; });
     setTimeout(() => { if (generator.done) generator.mesh.material.emissive.set(0x000000); }, 3000);
   }
 
@@ -401,7 +448,6 @@ class Game {
     } else {
       survivor.health = 'dying';
       survivor.body.material.emissive.set(0x651712);
-      survivor.mesh.rotation.z = Math.PI / 2;
     }
   }
 
@@ -415,6 +461,7 @@ class Game {
     survivor.mesh.visible = false;
     survivor.wiggle = 0;
     this.hooks.forEach(hook => hook.mesh.material.emissive.set(0x8d793d));
+    this.hooks.forEach(hook => { hook.aura.material.color.set(0xd6af53); hook.aura.visible = true; });
   }
 
   hookSurvivor(survivor, hook) {
@@ -427,6 +474,7 @@ class Game {
     survivor.mesh.visible = true;
     survivor.body.material.emissive.set(0xc6a767);
     this.hooks.forEach(item => item.mesh.material.emissive.set(0x000000));
+    this.hooks.forEach(item => item.aura.visible = false);
   }
 
   updateAI(dt) {
@@ -441,10 +489,10 @@ class Game {
       if (!threat && hooked) target = hooked;
       else if (!threat && dying) target = dying;
       else if (!threat && injured) target = injured;
-      if (threat) this.move(survivor, survivor.pos.clone().sub(this.killer.pos), 4, dt);
+      if (threat) this.moveToward(survivor, survivor.pos.clone().sub(this.killer.pos).multiplyScalar(2), 4, dt);
       else if (target) {
         const direction = target.pos.clone().sub(survivor.pos);
-        if (direction.length() > 1.7) this.move(survivor, direction, 4, dt);
+        if (direction.length() > 1.7) this.moveToward(survivor, target.pos, 4, dt);
         else if (target.type === 'generator') this.repair(target, survivor, dt);
         else if (target.type === 'gate') { target.progress += dt / 15; if (target.progress >= 1) { target.open = true; target.mesh.material.emissive.set(0x2d9e40); } }
         else if (target.state === 'hooked') { target.state = 'active'; target.health = 'injured'; target.body.material.emissive.set(0xa32620); }
@@ -453,16 +501,19 @@ class Game {
       }
     });
     if (!this.killer.isPlayer && this.killer.state === 'active') {
-      if (this.killer.carrying) { const hook = this.hooks.sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0]; this.move(this.killer, hook.pos.clone().sub(this.killer.pos), 3, dt); if (hook.pos.distanceTo(this.killer.pos) < 1.8) this.hookSurvivor(this.killer.carrying, hook); return; }
+      if (this.killer.carrying) { const hook = this.hooks.sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0]; this.moveToward(this.killer, hook.pos, 3, dt); if (hook.pos.distanceTo(this.killer.pos) < 1.8) this.hookSurvivor(this.killer.carrying, hook); return; }
       const dying = this.nearest(this.survivors.filter(item => item.health === 'dying' && item.state === 'active'), this.killer);
-      if (dying) { this.move(this.killer, dying.pos.clone().sub(this.killer.pos), 4.6, dt); if (dying.pos.distanceTo(this.killer.pos) < 1.7) this.carrySurvivor(dying); return; }
+      if (dying) { this.moveToward(this.killer, dying.pos, 4.6, dt); if (dying.pos.distanceTo(this.killer.pos) < 1.7) this.carrySurvivor(dying); return; }
       const target = this.survivors.filter(item => item.state === 'active').sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0];
-      if (target) { this.move(this.killer, target.pos.clone().sub(this.killer.pos), 4.6, dt); if (target.pos.distanceTo(this.killer.pos) < 2.1) this.hit(target); }
+      if (target) { this.moveToward(this.killer, target.pos, 4.6, dt); if (target.pos.distanceTo(this.killer.pos) < 2.1) this.hit(target); }
     }
   }
 
   updateStates(dt) {
     this.survivors.forEach(survivor => {
+      survivor.body.position.y = 1.12 + (survivor.walking ? Math.abs(Math.sin(this.time * 10)) * .1 : 0);
+      survivor.body.rotation.z = survivor.health === 'dying' ? Math.PI / 2 : survivor.state === 'hooked' ? Math.sin(this.time * 3) * .08 : 0;
+      survivor.walking = false;
       if (survivor.health === 'injured' && survivor.state === 'active') this.leaveTrace(survivor, 'blood');
       if (survivor.state === 'carried') {
         survivor.wiggle += dt / 16;
@@ -490,10 +541,15 @@ class Game {
   }
 
   updateCamera() {
-    const distance = 10;
-    const horizontal = Math.cos(this.pitch) * distance;
-    this.camera.position.copy(this.player.pos).add(new THREE.Vector3(Math.sin(this.yaw) * -horizontal, -Math.sin(this.pitch) * distance + 1.4, Math.cos(this.yaw) * -horizontal));
-    this.camera.lookAt(this.player.pos.clone().add(new THREE.Vector3(0, 1.1, 0)));
+    const forward = new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw));
+    if (this.player.type === 'killer') {
+      this.camera.position.copy(this.player.pos).add(new THREE.Vector3(0, 2.05, 0));
+      this.camera.lookAt(this.camera.position.clone().add(forward).add(new THREE.Vector3(0, Math.sin(this.pitch) * 1.2, 0)));
+      return;
+    }
+    const cameraPos = this.player.pos.clone().addScaledVector(forward, -6.5).add(new THREE.Vector3(0, 1.9, 0));
+    this.camera.position.copy(cameraPos);
+    this.camera.lookAt(this.player.pos.clone().addScaledVector(forward, 3.5).add(new THREE.Vector3(0, 1.4 + this.pitch * 1.2, 0)));
   }
 
   updateUI() {
