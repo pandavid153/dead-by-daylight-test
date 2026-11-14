@@ -414,8 +414,9 @@ class Game {
     const angles = [0, .32, -.32, .65, -.65, 1, -1, 1.45, -1.45, Math.PI];
     for (const angle of angles) {
       const candidate = direction.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), angle);
-      if (this.move(actor, candidate, speed, dt)) return;
+      if (this.move(actor, candidate, speed, dt)) return true;
     }
+    return false;
   }
 
   gridCell(point) { return { x: clamp(Math.floor((point.x + 48) / 2), 0, 47), z: clamp(Math.floor((point.z + 48) / 2), 0, 47) }; }
@@ -463,9 +464,18 @@ class Game {
       actor.routeTarget = targetCell;
       actor.routeAt = this.time;
     }
+    if (!actor.route?.length) {
+      actor.routeFailed = true;
+      actor.routeAt = 0;
+      return false;
+    }
     while (actor.route && actor.routeIndex < actor.route.length && actor.pos.distanceTo(actor.route[actor.routeIndex]) < .6) actor.routeIndex++;
-    const waypoint = actor.route?.[actor.routeIndex] || target;
-    this.moveToward(actor, waypoint, speed, dt);
+    const waypoint = actor.route?.[actor.routeIndex];
+    if (!waypoint) return false;
+    const moved = this.moveToward(actor, waypoint, speed, dt);
+    if (!moved) { actor.routeAt = 0; actor.stuckCount = (actor.stuckCount || 0) + 1; }
+    else actor.stuckCount = 0;
+    return moved;
   }
 
   playerMove(dt) {
@@ -753,7 +763,9 @@ class Game {
       if (!target) return;
       const path = this.findPath(survivor.pos, target.pos);
       if (!path.length && survivor.pos.distanceTo(target.pos) > 2.5) return;
-      const cost = path.length * 2 + reserveCount(target) * 28 + base;
+      const working = target.type === 'generator' ? (target.workers?.length || 0) : 0;
+      if (target.type === 'generator' && working >= 3) return;
+      const cost = path.length * 2 + reserveCount(target) * 28 + working * 10 + base;
       candidates.push({ target, type, score: cost, reason });
     };
     const hooked = this.survivors.find(other => other.state === 'hooked' && this.killer.pos.distanceTo(other.pos) > 14);
@@ -798,6 +810,7 @@ class Game {
       }
       const target = survivor.goal?.target;
       if (threat) {
+        survivor.aiState = 'evading';
         if (!survivor.chasePlan || this.time > survivor.chaseUntil || survivor.chasePlan.target.pos.distanceTo(survivor.pos) < 2) {
           survivor.chasePlan = this.chooseChasePlan(survivor);
           survivor.chaseUntil = this.time + 2.2;
@@ -808,36 +821,46 @@ class Game {
       }
       else if (target) {
         const direction = target.pos.clone().sub(survivor.pos);
-        if (direction.length() > 1.7) this.navigate(survivor, target.pos, 4, dt);
-        else if (target.type === 'generator') this.repair(target, survivor, dt);
+        if (direction.length() > 1.7) { survivor.aiState = `moving to ${survivor.goal?.type || 'goal'}`; this.navigate(survivor, target.pos, 4, dt); }
+        else if (target.type === 'generator') { survivor.aiState = 'repairing'; this.repair(target, survivor, dt); }
         else if (target.type === 'gate') {
           if (!target.worker || target.worker === survivor) {
             target.worker = survivor;
+            survivor.aiState = 'opening gate';
             this.aiTimedAction(survivor, target, 15, () => { target.open = true; target.worker = null; target.mesh.material.emissive.set(0x2d9e40); this.sound('gate'); }, dt);
           }
-        } else if (target.state === 'hooked') this.aiTimedAction(survivor, target, 2, () => { const hook = target.hook; target.state = 'active'; target.mesh.position.y = 0; hook.occupant = null; target.hook = null; target.pos.copy(survivor.pos).add(survivor.pos.clone().sub(hook.pos).normalize().multiplyScalar(1.4)); target.nextDecision = 0; target.health = 'injured'; target.body.material.emissive.set(0xa32620); this.sound('unhook'); }, dt);
-        else if (target.health === 'dying') this.aiTimedAction(survivor, target, 15, () => { target.health = 'injured'; target.body.material.emissive.set(0xa32620); }, dt);
-        else if (target.health === 'injured') this.aiTimedAction(survivor, target, 25, () => { target.health = 'healthy'; target.body.material.emissive.set(0x5197a4); }, dt);
+        } else if (target.state === 'hooked') { survivor.aiState = 'rescuing'; this.aiTimedAction(survivor, target, 2, () => { const hook = target.hook; target.state = 'active'; target.mesh.position.y = 0; hook.occupant = null; target.hook = null; target.pos.copy(survivor.pos).add(survivor.pos.clone().sub(hook.pos).normalize().multiplyScalar(1.4)); target.nextDecision = 0; target.health = 'injured'; target.body.material.emissive.set(0xa32620); this.sound('unhook'); }, dt); }
+        else if (target.health === 'dying') { survivor.aiState = 'reviving'; this.aiTimedAction(survivor, target, 15, () => { target.health = 'injured'; target.body.material.emissive.set(0xa32620); }, dt); }
+        else if (target.health === 'injured') { survivor.aiState = 'healing'; this.aiTimedAction(survivor, target, 25, () => { target.health = 'healthy'; target.body.material.emissive.set(0x5197a4); }, dt); }
       }
     });
     if (!this.killer.isPlayer && this.killer.state === 'active') {
-      if (this.killer.carrying) { const hook = this.hooks.filter(item => !item.occupant).sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0]; if (hook) { this.navigate(this.killer, hook.pos, 3, dt); if (hook.pos.distanceTo(this.killer.pos) < 1.8) this.hookSurvivor(this.killer.carrying, hook); } return; }
+      if (this.killer.carrying) { this.killer.aiState = 'carrying'; const hook = this.hooks.filter(item => !item.occupant).sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0]; if (hook) { this.navigate(this.killer, hook.pos, 3, dt); if (hook.pos.distanceTo(this.killer.pos) < 1.8) this.hookSurvivor(this.killer.carrying, hook); } return; }
       const dying = this.nearest(this.survivors.filter(item => item.health === 'dying' && item.state === 'active'), this.killer);
-      if (dying) { this.navigate(this.killer, dying.pos, 4.6, dt); if (dying.pos.distanceTo(this.killer.pos) < 1.7) this.carrySurvivor(dying); return; }
+      if (dying) {
+        this.killer.aiState = this.killer.cooldown > 0 ? 'attack recovery' : 'picking up';
+        if (this.killer.cooldown > 0) return;
+        this.navigate(this.killer, dying.pos, 4.6, dt);
+        if (dying.pos.distanceTo(this.killer.pos) < 1.7) {
+          if (this.killer.pickupTarget !== dying) { this.killer.pickupTarget = dying; this.killer.pickupAt = this.time; this.killer.animation = 'pickup'; }
+          if (this.time - this.killer.pickupAt >= 1) { this.killer.pickupTarget = null; this.carrySurvivor(dying); }
+        }
+        return;
+      }
       const target = this.survivors.filter(item => item.state === 'active' && this.canSee(this.killer, item)).sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0];
       if (target) this.killer.lastKnown = target.pos.clone();
       const activeGenerator = this.generators.filter(item => !item.done && (item.alert > 0 || item.workers?.length)).sort((a, b) => b.progress - a.progress)[0];
-      if (activeGenerator && target && target.pos.distanceTo(this.killer.pos) > 18 && Math.random() < dt * .8) this.navigate(this.killer, activeGenerator.pos, 4.6, dt);
-      else if (target) { this.navigate(this.killer, target.pos, 4.6, dt); if (target.pos.distanceTo(this.killer.pos) < 2.1) this.hit(target); }
-      else if (this.killer.lastKnown && this.killer.pos.distanceTo(this.killer.lastKnown) > 1.5) this.navigate(this.killer, this.killer.lastKnown, 4.2, dt);
-      else if (activeGenerator) this.navigate(this.killer, activeGenerator.pos, 4.2, dt);
+      if (activeGenerator && target && target.pos.distanceTo(this.killer.pos) > 18 && Math.random() < dt * .8) { this.killer.aiState = 'investigating generator'; this.navigate(this.killer, activeGenerator.pos, 4.6, dt); }
+      else if (target) { this.killer.aiState = 'chasing'; this.navigate(this.killer, target.pos, 4.6, dt); if (target.pos.distanceTo(this.killer.pos) < 2.1 && this.killer.cooldown <= 0) this.hit(target); }
+      else if (this.killer.lastKnown && this.killer.pos.distanceTo(this.killer.lastKnown) > 1.5) { this.killer.aiState = 'searching'; this.navigate(this.killer, this.killer.lastKnown, 4.2, dt); }
+      else if (activeGenerator) { this.killer.aiState = 'investigating generator'; this.navigate(this.killer, activeGenerator.pos, 4.2, dt); }
       else {
         if (!this.killer.patrol || this.time > this.killer.nextPatrol || this.killer.pos.distanceTo(this.killer.patrol.pos) < 2) {
           const options = this.generators.filter(generator => !generator.done);
           this.killer.patrol = options[Math.floor(Math.random() * options.length)];
           this.killer.nextPatrol = this.time + 7;
         }
-        if (this.killer.patrol) this.navigate(this.killer, this.killer.patrol.pos, 4.2, dt);
+        if (this.killer.patrol) { this.killer.aiState = 'patrolling'; this.navigate(this.killer, this.killer.patrol.pos, 4.2, dt); }
       }
     }
   }
@@ -939,8 +962,8 @@ class Game {
     $('#prompt').textContent = this.player.state === 'hooked' ? 'ON HOOK: survive until rescued' : this.player.state === 'carried' ? 'WIGGLING FREE...' : nearby;
     $('#roster').innerHTML = this.survivors.map(survivor => `<div class="card ${survivor.health} ${survivor.state}">${survivor.state === 'dead' ? '☠' : survivor.state === 'hooked' ? '⚓' : survivor.state === 'dying' ? '▰' : survivor.name[0]}<span class="marks">${'◆'.repeat(survivor.marks)}</span>${survivor.state === 'hooked' ? `<i class="hookbar" style="width:${survivor.hookTime / 90 * 100}%"></i>` : ''}</div>`).join('');
     const goalName = goal => goal?.target?.type === 'generator' ? `GEN ${goal.target.id}` : goal?.target?.name || goal?.target?.type || 'none';
-    const goals = this.survivors.filter(survivor => !survivor.isPlayer).map(survivor => survivor.chasePlan && this.killer.pos.distanceTo(survivor.pos) < 10 ? `${survivor.name}: CHASE ${survivor.chasePlan.type} - ${survivor.chasePlan.reason}, risk ${survivor.chasePlan.risk}` : `${survivor.name}: ${goalName(survivor.goal)} - ${survivor.goal?.reason || 'idle'}`);
-    $('#ai-debug').innerHTML = `<b>BOT GOALS</b><br>${goals.join('<br>')}`;
+    const goals = this.survivors.filter(survivor => !survivor.isPlayer).map(survivor => survivor.chasePlan && this.killer.pos.distanceTo(survivor.pos) < 10 ? `${survivor.name}: CHASE ${survivor.chasePlan.type} - ${survivor.chasePlan.reason}, risk ${survivor.chasePlan.risk}` : `${survivor.name}: ${survivor.aiState || goalName(survivor.goal)} - ${survivor.goal?.reason || 'idle'}`);
+    $('#ai-debug').innerHTML = `<b>BOT GOALS</b><br>${goals.join('<br>')}<br><b>KILLER:</b> ${this.killer.aiState || 'player controlled'}`;
   }
 
   checkEnd() {
