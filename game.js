@@ -384,8 +384,14 @@ class Game {
     if (actor.state !== 'active' || actor.stun > 0 || actor.vaulting || !direction.length()) return false;
     if (actor.boostUntil > this.time) speed *= 1.5;
     const next = actor.pos.clone().addScaledVector(direction.normalize(), speed * dt);
-    if (this.isBlocked(next, actor)) return false;
-    actor.pos.copy(next);
+    if (this.isBlocked(next, actor)) {
+      // Preserve the unblocked component so walls slide instead of hard-stopping actors.
+      const slideX = actor.pos.clone().setX(next.x);
+      const slideZ = actor.pos.clone().setZ(next.z);
+      if (!this.isBlocked(slideX, actor)) actor.pos.copy(slideX);
+      else if (!this.isBlocked(slideZ, actor)) actor.pos.copy(slideZ);
+      else return false;
+    } else actor.pos.copy(next);
     actor.mesh.rotation.y = Math.atan2(direction.x, direction.z);
     actor.walking = true;
     if (actor === this.player && actor.type === 'killer' && (!actor.lastStep || this.time - actor.lastStep > .42)) { actor.lastStep = this.time; this.sound('step'); }
@@ -619,7 +625,7 @@ class Game {
     if (player.type === 'survivor') {
       const window = this.nearest(this.windows, player, 1.8);
       const pallet = this.nearest(this.pallets.filter(item => item.state === 'upright' || item.state === 'dropped'), player, 1.8);
-      if (window) this.vault(player, window, 1);
+      if (window) this.vault(player, window, .5);
       else if (pallet?.state === 'upright') this.dropPallet(pallet);
       else if (pallet) this.vault(player, pallet, .7);
       return;
@@ -639,20 +645,30 @@ class Game {
 
   vault(actor, window, seconds) {
     if (actor.vaulting || actor.state !== 'active') return;
+    const normal = vec(Math.sin(window.rotation), Math.cos(window.rotation));
+    const approachSide = actor.pos.clone().sub(window.pos).dot(normal) >= 0 ? 1 : -1;
+    const clearance = actor.type === 'killer' ? 2.05 : 2.45;
+    const entry = window.pos.clone().addScaledVector(normal, approachSide * clearance);
+    const exit = window.pos.clone().addScaledVector(normal, -approachSide * clearance);
+    // The same collision model used by movement decides whether both window sides are usable.
+    if (this.isBlocked(entry, actor) || this.isBlocked(exit, actor)) {
+      this.vaultDebug = { actor: actor.name, window: window.pos.toArray(), result: 'blocked landing', entry: entry.toArray(), exit: exit.toArray() };
+      return;
+    }
     actor.vaulting = true;
     actor.stun = seconds;
     actor.animation = 'vault';
     actor.animationTime = 0;
+    actor.vaultData = { entry, exit, side: approachSide, started: this.time, duration: seconds };
+    this.vaultDebug = { actor: actor.name, window: window.pos.toArray(), result: 'started', entry: entry.toArray(), exit: exit.toArray(), duration: seconds };
     if (actor === this.player) this.sound('vault');
-    const normal = vec(Math.sin(window.rotation), Math.cos(window.rotation));
-    const direction = actor.pos.clone().sub(window.pos).dot(normal) >= 0 ? normal : normal.clone().negate();
     setTimeout(() => {
-      const distance = actor.type === 'killer' ? 1.7 : 2.2;
-      const choices = [direction, vec(direction.z, -direction.x), vec(-direction.z, direction.x), direction.clone().negate()];
-      const landing = choices.map(choice => actor.pos.clone().addScaledVector(choice, distance)).find(point => !this.isBlocked(point));
-      if (landing) actor.pos.copy(landing);
+      // Never substitute a same-side or perpendicular fallback after a vault starts.
+      actor.pos.copy(exit);
       actor.vaulting = false;
       actor.animation = 'idle';
+      this.vaultDebug = { ...actor.vaultData, result: 'completed', finished: this.time, position: actor.pos.toArray() };
+      actor.vaultData = null;
     }, seconds * 1000);
   }
 
@@ -816,12 +832,19 @@ class Game {
           survivor.chaseUntil = this.time + 2.2;
         }
         const plan = survivor.chasePlan;
-        if (plan?.type === 'window' && survivor.pos.distanceTo(plan.target.pos) < 1.8 && !survivor.vaulting) this.vault(survivor, plan.target, 1);
+        if (plan?.type === 'window' && survivor.pos.distanceTo(plan.target.pos) < 1.8 && !survivor.vaulting) this.vault(survivor, plan.target, .5);
         else if (plan) this.navigate(survivor, plan.target.pos, 4, dt);
       }
       else if (target) {
         const direction = target.pos.clone().sub(survivor.pos);
-        if (direction.length() > 1.7) { survivor.aiState = `moving to ${survivor.goal?.type || 'goal'}`; this.navigate(survivor, target.pos, 4, dt); }
+        if (direction.length() > 1.7) {
+          survivor.aiState = `moving to ${survivor.goal?.type || 'goal'}`;
+          if (!this.navigate(survivor, target.pos, 4, dt)) {
+            survivor.aiState = 'replanning blocked route';
+            survivor.goal = null;
+            survivor.nextDecision = this.time;
+          }
+        }
         else if (target.type === 'generator') { survivor.aiState = 'repairing'; this.repair(target, survivor, dt); }
         else if (target.type === 'gate') {
           if (!target.worker || target.worker === survivor) {
@@ -851,8 +874,8 @@ class Game {
       if (target) this.killer.lastKnown = target.pos.clone();
       const activeGenerator = this.generators.filter(item => !item.done && (item.alert > 0 || item.workers?.length)).sort((a, b) => b.progress - a.progress)[0];
       if (activeGenerator && target && target.pos.distanceTo(this.killer.pos) > 18 && Math.random() < dt * .8) { this.killer.aiState = 'investigating generator'; this.navigate(this.killer, activeGenerator.pos, 4.6, dt); }
-      else if (target) { this.killer.aiState = 'chasing'; this.navigate(this.killer, target.pos, 4.6, dt); if (target.pos.distanceTo(this.killer.pos) < 2.1 && this.killer.cooldown <= 0) this.hit(target); }
-      else if (this.killer.lastKnown && this.killer.pos.distanceTo(this.killer.lastKnown) > 1.5) { this.killer.aiState = 'searching'; this.navigate(this.killer, this.killer.lastKnown, 4.2, dt); }
+      else if (target) { this.killer.aiState = 'chasing'; if (!this.navigate(this.killer, target.pos, 4.6, dt)) { this.killer.aiState = 'replanning chase'; this.killer.lastKnown = null; this.killer.patrol = null; } if (target.pos.distanceTo(this.killer.pos) < 2.1 && this.killer.cooldown <= 0) this.hit(target); }
+      else if (this.killer.lastKnown && this.killer.pos.distanceTo(this.killer.lastKnown) > 1.5) { this.killer.aiState = 'searching'; if (!this.navigate(this.killer, this.killer.lastKnown, 4.2, dt)) this.killer.lastKnown = null; }
       else if (activeGenerator) { this.killer.aiState = 'investigating generator'; this.navigate(this.killer, activeGenerator.pos, 4.2, dt); }
       else {
         if (!this.killer.patrol || this.time > this.killer.nextPatrol || this.killer.pos.distanceTo(this.killer.patrol.pos) < 2) {
@@ -877,6 +900,7 @@ class Game {
     actor.body.position.y = actor.health === 'dying' ? .45 : 1.35 + (walking ? Math.abs(Math.sin(t * 10)) * .08 : 0);
     if (walking) { arm = Math.sin(t * 10) * .65; leg = -arm; }
     if (actor.animation === 'repair' || actor.animation === 'interact') { arm = .85 + Math.sin(t * 12) * .38; }
+    if (actor.state === 'hooked') { arm = -2.15; leg = Math.sin(t * 2.4) * .14; actor.body.position.y = 1.35 + Math.sin(t * 2.4) * .05; }
     if (actor.animation === 'vault') { actor.body.position.y = 1.35 + Math.sin(Math.min(t / Math.max(.1, actor.stun), 1) * Math.PI) * .55; arm = -1.1; leg = .8; }
     if (actor.animation === 'swing') { actor.arms[1].rotation.x = -Math.min(t * 8, 1.8); actor.arms[0].rotation.x = .4; return; }
     if (actor.animation === 'lunge') { actor.arms[1].rotation.x = -1.5; actor.mesh.rotation.z = Math.sin(t * 13) * .08; return; }
@@ -927,14 +951,19 @@ class Game {
   }
 
   updateCamera() {
-    const forward = new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw));
+    let viewActor = this.player;
+    if (this.player.type === 'survivor' && ['dead', 'escaped'].includes(this.player.state)) {
+      const teammates = this.survivors.filter(survivor => survivor !== this.player && survivor.state === 'active');
+      if (teammates.length) viewActor = teammates[0];
+    }
+    const forward = viewActor === this.player ? new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw)) : new THREE.Vector3(Math.sin(viewActor.mesh.rotation.y), 0, Math.cos(viewActor.mesh.rotation.y));
     if (this.player.state === 'carried') {
       this.camera.position.copy(this.killer.pos).add(new THREE.Vector3(0, 3.1, 0)).addScaledVector(forward, -4.4);
       this.camera.lookAt(this.killer.pos.clone().addScaledVector(forward, 4.5).add(new THREE.Vector3(0, 1.3, 0)));
       return;
     }
-    if (this.player.type === 'killer') {
-      this.camera.position.copy(this.player.pos).add(new THREE.Vector3(0, 2.05, 0));
+    if (viewActor.type === 'killer') {
+      this.camera.position.copy(viewActor.pos).add(new THREE.Vector3(0, 2.05, 0));
       this.camera.lookAt(this.camera.position.clone().add(forward).add(new THREE.Vector3(0, Math.sin(this.pitch) * 1.2, 0)));
       if (this.weaponView) {
         const animation = this.player.animation;
@@ -944,9 +973,9 @@ class Game {
       }
       return;
     }
-    const cameraPos = this.player.pos.clone().addScaledVector(forward, -4.1).add(new THREE.Vector3(0, 3.05, 0));
+    const cameraPos = viewActor.pos.clone().addScaledVector(forward, -4.1).add(new THREE.Vector3(0, 3.05, 0));
     this.camera.position.copy(cameraPos);
-    this.camera.lookAt(this.player.pos.clone().addScaledVector(forward, 5.4).add(new THREE.Vector3(0, 1.75 + this.pitch * 1.2, 0)));
+    this.camera.lookAt(viewActor.pos.clone().addScaledVector(forward, 5.4).add(new THREE.Vector3(0, 1.75 + this.pitch * 1.2, 0)));
   }
 
   updateUI() {
@@ -963,7 +992,8 @@ class Game {
     $('#roster').innerHTML = this.survivors.map(survivor => `<div class="card ${survivor.health} ${survivor.state}">${survivor.state === 'dead' ? '☠' : survivor.state === 'hooked' ? '⚓' : survivor.state === 'dying' ? '▰' : survivor.name[0]}<span class="marks">${'◆'.repeat(survivor.marks)}</span>${survivor.state === 'hooked' ? `<i class="hookbar" style="width:${survivor.hookTime / 90 * 100}%"></i>` : ''}</div>`).join('');
     const goalName = goal => goal?.target?.type === 'generator' ? `GEN ${goal.target.id}` : goal?.target?.name || goal?.target?.type || 'none';
     const goals = this.survivors.filter(survivor => !survivor.isPlayer).map(survivor => survivor.chasePlan && this.killer.pos.distanceTo(survivor.pos) < 10 ? `${survivor.name}: CHASE ${survivor.chasePlan.type} - ${survivor.chasePlan.reason}, risk ${survivor.chasePlan.risk}` : `${survivor.name}: ${survivor.aiState || goalName(survivor.goal)} - ${survivor.goal?.reason || 'idle'}`);
-    $('#ai-debug').innerHTML = `<b>BOT GOALS</b><br>${goals.join('<br>')}<br><b>KILLER:</b> ${this.killer.aiState || 'player controlled'}`;
+    const vaultLine = this.vaultDebug ? `<br><b>VAULT:</b> ${this.vaultDebug.actor} ${this.vaultDebug.result}` : '';
+    $('#ai-debug').innerHTML = `<b>BOT GOALS</b><br>${goals.join('<br>')}<br><b>KILLER:</b> ${this.killer.aiState || 'player controlled'}${vaultLine}`;
   }
 
   checkEnd() {
