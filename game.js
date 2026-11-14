@@ -22,7 +22,7 @@ class Game {
     this.role = role;
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x182019);
-    this.scene.fog = new THREE.Fog(0x182019, 14, 50);
+    this.scene.fog = new THREE.FogExp2(0x182019, .028);
     this.camera = new THREE.PerspectiveCamera(68, innerWidth / innerHeight, 0.1, 160);
     this.renderer = new THREE.WebGLRenderer({ canvas: $('#world'), antialias: true });
     this.renderer.setSize(innerWidth, innerHeight);
@@ -161,6 +161,13 @@ class Game {
       corner.position.set(x, 1.75, z);
       this.scene.add(corner);
     });
+    const mistMaterial = new THREE.MeshBasicMaterial({ color: 0xa5b8a0, transparent: true, opacity: .055, depthWrite: false, side: THREE.DoubleSide });
+    for (let index = 0; index < 22; index++) {
+      const bank = new THREE.Mesh(new THREE.PlaneGeometry(10 + Math.random() * 10, 1.8 + Math.random() * 2), mistMaterial);
+      bank.position.set((Math.random() - .5) * 84, .8 + Math.random() * 1.6, (Math.random() - .5) * 84);
+      bank.rotation.y = Math.random() * Math.PI;
+      this.scene.add(bank);
+    }
   }
 
   addWindow(pos, rotation) {
@@ -765,8 +772,8 @@ class Game {
   updateCamera() {
     const forward = new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw));
     if (this.player.state === 'carried') {
-      this.camera.position.copy(this.killer.pos).add(new THREE.Vector3(0, 2.25, 0)).addScaledVector(forward, -.45);
-      this.camera.lookAt(this.killer.pos.clone().addScaledVector(forward, 4).add(new THREE.Vector3(0, 1.4, 0)));
+      this.camera.position.copy(this.killer.pos).add(new THREE.Vector3(0, 3.1, 0)).addScaledVector(forward, -4.4);
+      this.camera.lookAt(this.killer.pos.clone().addScaledVector(forward, 4.5).add(new THREE.Vector3(0, 1.3, 0)));
       return;
     }
     if (this.player.type === 'killer') {
