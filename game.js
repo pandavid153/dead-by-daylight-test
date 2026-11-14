@@ -165,9 +165,9 @@ class Game {
   }
 
   addPallet(pos, rotation) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(2.4, .22, .75), new THREE.MeshStandardMaterial({ color: 0x94633d, roughness: 1 }));
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.15, .22), new THREE.MeshStandardMaterial({ color: 0x94633d, roughness: 1 }));
     mesh.position.copy(pos);
-    mesh.position.y = 1.3;
+    mesh.position.y = 1.08;
     mesh.rotation.y = rotation;
     this.scene.add(mesh);
     const pallet = { pos, mesh, rotation, state: 'upright', wall: null };
@@ -285,13 +285,17 @@ class Game {
       this.enableAudio();
       this.holdAction = true;
       this.mouseDownAt = performance.now();
-      if (this.player.type === 'killer') setTimeout(() => { if (this.holdAction && this.player.cooldown <= 0) this.startLongSwing(); }, 660);
+      if (this.player.type === 'killer' && this.player.cooldown <= 0) this.startLongSwing();
     });
     addEventListener('mouseup', event => {
       if (event.button !== 0) return;
       const held = performance.now() - this.mouseDownAt;
       this.holdAction = false;
-      if (this.player.type === 'killer' && !this.longSwing && held < 660) this.attack();
+      if (this.player.type === 'killer' && this.player.longSwing && held < 660) {
+        clearTimeout(this.player.swingTimer);
+        this.player.longSwing = false;
+        this.attack();
+      }
     });
     addEventListener('mousemove', event => {
       if (document.pointerLockElement !== canvas) return;
@@ -328,7 +332,7 @@ class Game {
   }
 
   move(actor, direction, speed, dt) {
-    if (actor.state !== 'active' || actor.stun > 0 || !direction.length()) return false;
+    if (actor.state !== 'active' || actor.stun > 0 || actor.vaulting || !direction.length()) return false;
     const next = actor.pos.clone().addScaledVector(direction.normalize(), speed * dt);
     if (this.isBlocked(next, actor)) return false;
     actor.pos.copy(next);
@@ -354,14 +358,14 @@ class Game {
 
   playerMove(dt) {
     const player = this.player;
-    if (player.state !== 'active') return;
+    if (player.state !== 'active' || this.action || (player.type === 'survivor' && this.holdAction && player.repairing)) return;
     const forward = vec(Math.sin(this.yaw), Math.cos(this.yaw));
     const right = vec(forward.z, -forward.x);
     const direction = vec();
     if (this.keys.KeyW) direction.add(forward);
     if (this.keys.KeyS) direction.sub(forward);
-    if (this.keys.KeyA) direction.sub(right);
-    if (this.keys.KeyD) direction.add(right);
+    if (this.keys.KeyA) direction.add(right);
+    if (this.keys.KeyD) direction.sub(right);
     let speed = player.type === 'killer' ? 4.6 : 2.2;
     if (player.type === 'survivor') {
       if (this.keys.ControlLeft || this.keys.ControlRight) speed = 1.3;
@@ -523,7 +527,8 @@ class Game {
 
   dropPallet(pallet) {
     pallet.state = 'dropped';
-    pallet.mesh.position.y = .18;
+    pallet.mesh.position.y = .14;
+    pallet.mesh.rotation.x = Math.PI / 2;
     pallet.mesh.rotation.y = pallet.rotation;
     pallet.wall = { pos: pallet.pos, width: pallet.rotation ? .75 : 2.4, depth: pallet.rotation ? 2.4 : .75, active: true };
     this.walls.push(pallet.wall);
@@ -551,7 +556,7 @@ class Game {
     killer.longSwing = true;
     killer.animation = 'lunge';
     killer.animationTime = 0;
-    setTimeout(() => { if (killer.longSwing) { killer.longSwing = false; this.attack(); } }, 20);
+    killer.swingTimer = setTimeout(() => { if (this.holdAction && killer.longSwing) { killer.longSwing = false; this.attack(); } }, 660);
   }
 
   hit(survivor) {
