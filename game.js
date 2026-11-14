@@ -313,9 +313,9 @@ class Game {
     if (!this.audioContext || this.audioContext.state !== 'running') return;
     const settings = {
       step: [95, .035, 'triangle'], swing: [150, .12, 'sawtooth'], hit: [65, .22, 'square'],
-      pickup: [105, .18, 'triangle'], hook: [52, .28, 'sawtooth'], vault: [240, .1, 'triangle'],
+      pickup: [105, .18, 'triangle'], hook: [52, .28, 'sawtooth'], unhook: [175, .16, 'triangle'], vault: [240, .1, 'triangle'],
       pallet: [70, .18, 'square'], repair: [180, .045, 'square'], fail: [360, .22, 'sawtooth'],
-      generator: [82, .12, 'square'], moan: [130, .2, 'sine'], stun: [48, .25, 'sawtooth']
+      generator: [82, .12, 'square'], gate: [310, .2, 'sine'], moan: [130, .2, 'sine'], stun: [48, .25, 'sawtooth'], wiggle: [150, .09, 'triangle']
     }[type];
     if (!settings) return;
     const [frequency, duration, wave] = settings;
@@ -344,7 +344,8 @@ class Game {
 
   isBlocked(point, actor = null) {
     const actors = [this.killer, ...this.survivors].filter(other => other && other !== actor && other.state === 'active');
-    return Math.abs(point.x) > 47 || Math.abs(point.z) > 47 || this.walls.some(wall => wall.active && Math.abs(point.x - wall.pos.x) < wall.width / 2 + .42 && Math.abs(point.z - wall.pos.z) < wall.depth / 2 + .42) || actors.some(other => other.pos.distanceTo(point) < .8);
+    const solidObjectives = [...this.generators, ...this.hooks].some(object => object.pos.distanceTo(point) < 1.05) || this.gates.some(gate => Math.abs(point.x - gate.pos.x) < 2.8 && Math.abs(point.z - gate.pos.z) < .75);
+    return Math.abs(point.x) > 47 || Math.abs(point.z) > 47 || solidObjectives || this.walls.some(wall => wall.active && Math.abs(point.x - wall.pos.x) < wall.width / 2 + .42 && Math.abs(point.z - wall.pos.z) < wall.depth / 2 + .42) || actors.some(other => other.pos.distanceTo(point) < .8);
   }
 
   moveToward(actor, target, speed, dt) {
@@ -426,10 +427,10 @@ class Game {
       this.cancelAction();
       this.repair(generator, player, dt);
     } else if (gate) {
-      const action = this.startAction('OPENING EXIT GATE', 15, gate, () => { gate.open = true; gate.mesh.material.emissive.set(0x2d9e40); });
+      const action = this.startAction('OPENING EXIT GATE', 15, gate, () => { gate.open = true; gate.mesh.material.emissive.set(0x2d9e40); this.sound('gate'); });
       this.progressAction(dt);
     } else if (hooked) {
-      const action = this.startAction('UNHOOKING', 2, hooked, () => { hooked.state = 'active'; hooked.hook.occupant = null; hooked.hook = null; hooked.health = 'injured'; hooked.body.material.emissive.set(0xa32620); });
+      const action = this.startAction('UNHOOKING', 2, hooked, () => { hooked.state = 'active'; hooked.hook.occupant = null; hooked.hook = null; hooked.health = 'injured'; hooked.body.material.emissive.set(0xa32620); this.sound('unhook'); });
       this.progressAction(dt);
     } else if (dying) {
       const action = this.startAction('REVIVING', 15, dying, () => { dying.health = 'injured'; dying.body.material.emissive.set(0xa32620); });
@@ -514,6 +515,8 @@ class Game {
     if (actor.vaulting || actor.state !== 'active') return;
     actor.vaulting = true;
     actor.stun = seconds;
+    actor.animation = 'vault';
+    actor.animationTime = 0;
     if (actor === this.player) this.sound('vault');
     const direction = vec(Math.sin(window.rotation), Math.cos(window.rotation));
     setTimeout(() => {
@@ -522,6 +525,7 @@ class Game {
       const landing = choices.map(choice => actor.pos.clone().addScaledVector(choice, distance)).find(point => !this.isBlocked(point));
       if (landing) actor.pos.copy(landing);
       actor.vaulting = false;
+      actor.animation = 'idle';
     }, seconds * 1000);
   }
 
@@ -562,7 +566,7 @@ class Game {
   hit(survivor) {
     const killer = this.killer;
     if (!survivor || killer.cooldown > 0) return;
-    killer.cooldown = 2;
+    killer.cooldown = killer.isPlayer ? 2 : 3;
     survivor.animation = 'flinch';
     this.sound('hit');
     survivor.animationTime = 0;
@@ -611,6 +615,17 @@ class Game {
     this.hooks.forEach(item => item.aura.visible = false);
   }
 
+  aiTimedAction(actor, target, seconds, complete, dt) {
+    if (!actor.aiTask || actor.aiTask.target !== target) actor.aiTask = { target, progress: 0 };
+    actor.aiTask.progress += dt / seconds;
+    actor.animation = 'interact';
+    if (actor.aiTask.progress >= 1) {
+      actor.aiTask = null;
+      actor.animation = 'idle';
+      complete();
+    }
+  }
+
   updateAI(dt) {
     this.survivors.filter(item => !item.isPlayer && item.state === 'active').forEach(survivor => {
       if (survivor.health === 'dying') { this.move(survivor, vec(Math.random() - .5, Math.random() - .5), .5, dt); return; }
@@ -635,10 +650,14 @@ class Game {
         const direction = target.pos.clone().sub(survivor.pos);
         if (direction.length() > 1.7) this.moveToward(survivor, target.pos, 4, dt);
         else if (target.type === 'generator') this.repair(target, survivor, dt);
-        else if (target.type === 'gate') { target.progress += dt / 15; if (target.progress >= 1) { target.open = true; target.mesh.material.emissive.set(0x2d9e40); } }
-        else if (target.state === 'hooked') { target.state = 'active'; target.hook.occupant = null; target.hook = null; target.health = 'injured'; target.body.material.emissive.set(0xa32620); }
-        else if (target.health === 'dying') { target.health = 'injured'; target.body.material.emissive.set(0xa32620); }
-        else if (target.health === 'injured') { target.health = 'healthy'; target.body.material.emissive.set(0x5197a4); }
+        else if (target.type === 'gate') {
+          if (!target.worker || target.worker === survivor) {
+            target.worker = survivor;
+            this.aiTimedAction(survivor, target, 15, () => { target.open = true; target.worker = null; target.mesh.material.emissive.set(0x2d9e40); this.sound('gate'); }, dt);
+          }
+        } else if (target.state === 'hooked') this.aiTimedAction(survivor, target, 2, () => { target.state = 'active'; target.hook.occupant = null; target.hook = null; target.health = 'injured'; target.body.material.emissive.set(0xa32620); this.sound('unhook'); }, dt);
+        else if (target.health === 'dying') this.aiTimedAction(survivor, target, 15, () => { target.health = 'injured'; target.body.material.emissive.set(0xa32620); }, dt);
+        else if (target.health === 'injured') this.aiTimedAction(survivor, target, 25, () => { target.health = 'healthy'; target.body.material.emissive.set(0x5197a4); }, dt);
       }
     });
     if (!this.killer.isPlayer && this.killer.state === 'active') {
@@ -663,6 +682,7 @@ class Game {
     actor.body.position.y = 1.35 + (walking ? Math.abs(Math.sin(t * 10)) * .08 : 0);
     if (walking) { arm = Math.sin(t * 10) * .65; leg = -arm; }
     if (actor.animation === 'repair' || actor.animation === 'interact') { arm = .85 + Math.sin(t * 12) * .38; }
+    if (actor.animation === 'vault') { actor.body.position.y = 1.35 + Math.sin(Math.min(t / Math.max(.1, actor.stun), 1) * Math.PI) * .55; arm = -1.1; leg = .8; }
     if (actor.animation === 'swing') { actor.arms[1].rotation.x = -Math.min(t * 8, 1.8); actor.arms[0].rotation.x = .4; return; }
     if (actor.animation === 'lunge') { actor.arms[1].rotation.x = -1.5; actor.mesh.rotation.z = Math.sin(t * 13) * .08; return; }
     if (actor.animation === 'pickup' || actor.animation === 'carry' || actor.animation === 'hook') { arm = -1.2; }
@@ -710,6 +730,11 @@ class Game {
 
   updateCamera() {
     const forward = new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw));
+    if (this.player.state === 'carried') {
+      this.camera.position.copy(this.killer.pos).add(new THREE.Vector3(0, 2.25, 0)).addScaledVector(forward, -.45);
+      this.camera.lookAt(this.killer.pos.clone().addScaledVector(forward, 4).add(new THREE.Vector3(0, 1.4, 0)));
+      return;
+    }
     if (this.player.type === 'killer') {
       this.camera.position.copy(this.player.pos).add(new THREE.Vector3(0, 2.05, 0));
       this.camera.lookAt(this.camera.position.clone().add(forward).add(new THREE.Vector3(0, Math.sin(this.pitch) * 1.2, 0)));
