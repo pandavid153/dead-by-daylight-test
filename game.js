@@ -118,9 +118,10 @@ class Game {
   }
 
   addTiles() {
+    // 22m grid spacing keeps tile footprints from merging into unreadable clusters.
+    const slots = [-30, -8, 14, 36].flatMap(x => [-30, -8, 14].map(z => vec(x, z))).sort(() => Math.random() - .5);
     for (let index = 0; index < 10; index++) {
-      let p = this.clearPosition(14, 14);
-      for (let attempt = 0; attempt < 80 && this.tileCenters.some(center => center.distanceTo(p) < 19); attempt++) p = vec((Math.random() - .5) * 64, (Math.random() - .5) * 64);
+      const p = slots[index].clone().add(vec((Math.random() - .5) * 4, (Math.random() - .5) * 4));
       this.tileCenters.push(p.clone());
       const form = index % 5;
       if (form === 0) {
@@ -161,6 +162,11 @@ class Game {
       corner.position.set(x, 1.75, z);
       this.scene.add(corner);
     });
+    // Solid visual perimeter so the arena feels contained rather than cut off.
+    this.addWall(vec(0, -47.5), 96, 1);
+    this.addWall(vec(0, 47.5), 96, 1);
+    this.addWall(vec(-47.5, 0), 1, 96);
+    this.addWall(vec(47.5, 0), 1, 96);
     const mistMaterial = new THREE.MeshBasicMaterial({ color: 0xa5b8a0, transparent: true, opacity: .055, depthWrite: false, side: THREE.DoubleSide });
     for (let index = 0; index < 22; index++) {
       const bank = new THREE.Mesh(new THREE.PlaneGeometry(10 + Math.random() * 10, 1.8 + Math.random() * 2), mistMaterial);
@@ -395,6 +401,56 @@ class Game {
     }
   }
 
+  gridCell(point) { return { x: clamp(Math.floor((point.x + 48) / 2), 0, 47), z: clamp(Math.floor((point.z + 48) / 2), 0, 47) }; }
+
+  gridPoint(cell) { return vec(cell.x * 2 - 47, cell.z * 2 - 47); }
+
+  staticBlocked(cell) {
+    const point = this.gridPoint(cell);
+    return this.walls.some(wall => wall.active && Math.abs(point.x - wall.pos.x) < wall.width / 2 + .25 && Math.abs(point.z - wall.pos.z) < wall.depth / 2 + .25) || this.generators.some(generator => generator.pos.distanceTo(point) < 1) || this.hooks.some(hook => hook.pos.distanceTo(point) < 1);
+  }
+
+  findPath(from, to) {
+    const start = this.gridCell(from);
+    let goal = this.gridCell(to);
+    if (this.staticBlocked(goal)) {
+      const options = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([x, z]) => ({ x: goal.x + x, z: goal.z + z })).filter(cell => cell.x >= 0 && cell.x < 48 && cell.z >= 0 && cell.z < 48 && !this.staticBlocked(cell));
+      goal = options.sort((a, b) => this.gridPoint(a).distanceTo(to) - this.gridPoint(b).distanceTo(to))[0] || goal;
+    }
+    const key = cell => `${cell.x},${cell.z}`;
+    const open = [start], came = new Map(), score = new Map([[key(start), 0]]), estimate = cell => Math.abs(cell.x - goal.x) + Math.abs(cell.z - goal.z);
+    while (open.length) {
+      open.sort((a, b) => (score.get(key(a)) + estimate(a)) - (score.get(key(b)) + estimate(b)));
+      const current = open.shift();
+      if (current.x === goal.x && current.z === goal.z) {
+        const path = [];
+        let node = current;
+        while (came.has(key(node))) { path.unshift(this.gridPoint(node)); node = came.get(key(node)); }
+        return path;
+      }
+      [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([x, z]) => {
+        const next = { x: current.x + x, z: current.z + z };
+        if (next.x < 0 || next.x >= 48 || next.z < 0 || next.z >= 48 || this.staticBlocked(next)) return;
+        const nextKey = key(next), value = score.get(key(current)) + 1;
+        if (value < (score.get(nextKey) ?? Infinity)) { came.set(nextKey, current); score.set(nextKey, value); if (!open.some(cell => cell.x === next.x && cell.z === next.z)) open.push(next); }
+      });
+    }
+    return [];
+  }
+
+  navigate(actor, target, speed, dt) {
+    const targetCell = this.gridCell(target);
+    if (!actor.route || !actor.routeTarget || actor.routeTarget.x !== targetCell.x || actor.routeTarget.z !== targetCell.z || this.time - actor.routeAt > .9) {
+      actor.route = this.findPath(actor.pos, target);
+      actor.routeIndex = 0;
+      actor.routeTarget = targetCell;
+      actor.routeAt = this.time;
+    }
+    while (actor.route && actor.routeIndex < actor.route.length && actor.pos.distanceTo(actor.route[actor.routeIndex]) < .6) actor.routeIndex++;
+    const waypoint = actor.route?.[actor.routeIndex] || target;
+    this.moveToward(actor, waypoint, speed, dt);
+  }
+
   playerMove(dt) {
     const player = this.player;
     if (player.state !== 'active' || this.action || (player.type === 'survivor' && this.holdAction && player.repairing)) return;
@@ -556,10 +612,11 @@ class Game {
     actor.animation = 'vault';
     actor.animationTime = 0;
     if (actor === this.player) this.sound('vault');
-    const direction = vec(Math.sin(window.rotation), Math.cos(window.rotation));
+    const normal = vec(Math.sin(window.rotation), Math.cos(window.rotation));
+    const direction = actor.pos.clone().sub(window.pos).dot(normal) >= 0 ? normal : normal.clone().negate();
     setTimeout(() => {
       const distance = actor.type === 'killer' ? 1.7 : 2.2;
-      const choices = [direction, direction.clone().negate(), vec(direction.z, -direction.x), vec(-direction.z, direction.x)];
+      const choices = [direction, vec(direction.z, -direction.x), vec(-direction.z, direction.x), direction.clone().negate()];
       const landing = choices.map(choice => actor.pos.clone().addScaledVector(choice, distance)).find(point => !this.isBlocked(point));
       if (landing) actor.pos.copy(landing);
       actor.vaulting = false;
@@ -683,10 +740,13 @@ class Game {
       if (!threat && hooked && this.killer.pos.distanceTo(hooked.pos) > 14 && (hooked.hookTime < 65 || Math.random() < dt * .5)) target = hooked;
       else if (!threat && dying) target = dying;
       else if (!threat && injured) target = injured;
-      if (threat) this.moveToward(survivor, survivor.pos.clone().sub(this.killer.pos).multiplyScalar(2), 4, dt);
+      if (threat) {
+        const escape = survivor.pos.clone().add(survivor.pos.clone().sub(this.killer.pos).normalize().multiplyScalar(16));
+        this.navigate(survivor, escape, 4, dt);
+      }
       else if (target) {
         const direction = target.pos.clone().sub(survivor.pos);
-        if (direction.length() > 1.7) this.moveToward(survivor, target.pos, 4, dt);
+        if (direction.length() > 1.7) this.navigate(survivor, target.pos, 4, dt);
         else if (target.type === 'generator') this.repair(target, survivor, dt);
         else if (target.type === 'gate') {
           if (!target.worker || target.worker === survivor) {
@@ -699,16 +759,16 @@ class Game {
       }
     });
     if (!this.killer.isPlayer && this.killer.state === 'active') {
-      if (this.killer.carrying) { const hook = this.hooks.filter(item => !item.occupant).sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0]; if (hook) { this.moveToward(this.killer, hook.pos, 3, dt); if (hook.pos.distanceTo(this.killer.pos) < 1.8) this.hookSurvivor(this.killer.carrying, hook); } return; }
+      if (this.killer.carrying) { const hook = this.hooks.filter(item => !item.occupant).sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0]; if (hook) { this.navigate(this.killer, hook.pos, 3, dt); if (hook.pos.distanceTo(this.killer.pos) < 1.8) this.hookSurvivor(this.killer.carrying, hook); } return; }
       const dying = this.nearest(this.survivors.filter(item => item.health === 'dying' && item.state === 'active'), this.killer);
-      if (dying) { this.moveToward(this.killer, dying.pos, 4.6, dt); if (dying.pos.distanceTo(this.killer.pos) < 1.7) this.carrySurvivor(dying); return; }
+      if (dying) { this.navigate(this.killer, dying.pos, 4.6, dt); if (dying.pos.distanceTo(this.killer.pos) < 1.7) this.carrySurvivor(dying); return; }
       const target = this.survivors.filter(item => item.state === 'active' && this.canSee(this.killer, item)).sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0];
       if (target) this.killer.lastKnown = target.pos.clone();
       const activeGenerator = this.generators.filter(item => !item.done && (item.alert > 0 || item.workers?.length)).sort((a, b) => b.progress - a.progress)[0];
-      if (activeGenerator && target && target.pos.distanceTo(this.killer.pos) > 18 && Math.random() < dt * .8) this.moveToward(this.killer, activeGenerator.pos, 4.6, dt);
-      else if (target) { this.moveToward(this.killer, target.pos, 4.6, dt); if (target.pos.distanceTo(this.killer.pos) < 2.1) this.hit(target); }
-      else if (this.killer.lastKnown && this.killer.pos.distanceTo(this.killer.lastKnown) > 1.5) this.moveToward(this.killer, this.killer.lastKnown, 4.2, dt);
-      else if (activeGenerator) this.moveToward(this.killer, activeGenerator.pos, 4.2, dt);
+      if (activeGenerator && target && target.pos.distanceTo(this.killer.pos) > 18 && Math.random() < dt * .8) this.navigate(this.killer, activeGenerator.pos, 4.6, dt);
+      else if (target) { this.navigate(this.killer, target.pos, 4.6, dt); if (target.pos.distanceTo(this.killer.pos) < 2.1) this.hit(target); }
+      else if (this.killer.lastKnown && this.killer.pos.distanceTo(this.killer.lastKnown) > 1.5) this.navigate(this.killer, this.killer.lastKnown, 4.2, dt);
+      else if (activeGenerator) this.navigate(this.killer, activeGenerator.pos, 4.2, dt);
     }
   }
 
