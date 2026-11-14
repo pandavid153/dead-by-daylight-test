@@ -382,6 +382,7 @@ class Game {
 
   move(actor, direction, speed, dt) {
     if (actor.state !== 'active' || actor.stun > 0 || actor.vaulting || !direction.length()) return false;
+    if (actor.type === 'killer' && actor.cooldown > 0) speed = 2;
     if (actor.boostUntil > this.time) speed *= 1.5;
     const next = actor.pos.clone().addScaledVector(direction.normalize(), speed * dt);
     if (this.isBlocked(next, actor)) {
@@ -710,6 +711,8 @@ class Game {
     const killer = this.killer;
     if (!survivor || killer.cooldown > 0) return;
     killer.cooldown = killer.isPlayer ? 2 : 3;
+    killer.animation = 'recovery';
+    killer.animationTime = 0;
     survivor.animation = 'flinch';
     this.sound('hit');
     survivor.animationTime = 0;
@@ -900,6 +903,7 @@ class Game {
     actor.body.position.y = actor.health === 'dying' ? .45 : 1.35 + (walking ? Math.abs(Math.sin(t * 10)) * .08 : 0);
     if (walking) { arm = Math.sin(t * 10) * .65; leg = -arm; }
     if (actor.animation === 'repair' || actor.animation === 'interact') { arm = .85 + Math.sin(t * 12) * .38; }
+    if (actor.animation === 'recovery') { arm = .55 + Math.sin(t * 8) * .16; actor.mesh.rotation.z = .08; if (actor.cooldown <= 0) actor.animation = 'idle'; }
     if (actor.state === 'hooked') { arm = -2.15; leg = Math.sin(t * 2.4) * .14; actor.body.position.y = 1.35 + Math.sin(t * 2.4) * .05; }
     if (actor.animation === 'vault') { actor.body.position.y = 1.35 + Math.sin(Math.min(t / Math.max(.1, actor.stun), 1) * Math.PI) * .55; arm = -1.1; leg = .8; }
     if (actor.animation === 'swing') { actor.arms[1].rotation.x = -Math.min(t * 8, 1.8); actor.arms[0].rotation.x = .4; return; }
