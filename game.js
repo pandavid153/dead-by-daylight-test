@@ -116,6 +116,10 @@ class Game {
   spawnPosition(side = 0) {
     let point = this.clearPosition(14, 7);
     for (let attempt = 0; attempt < 120 && (this.spawnPositions.some(other => other.distanceTo(point) < 6) || (side && point.x * side < 20)); attempt++) point = this.clearPosition(14, 7);
+    if (side && point.x * side < 20) {
+      const fallback = [-30, -14, 2, 18, 30].map(z => vec(side * 34, z)).find(candidate => !this.isBlocked(candidate) && !this.spawnPositions.some(other => other.distanceTo(candidate) < 6));
+      if (fallback) point = fallback;
+    }
     this.spawnPositions.push(point.clone());
     return point;
   }
