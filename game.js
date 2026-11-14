@@ -20,9 +20,12 @@ function start(role) {
 class Game {
   constructor(role) {
     this.role = role;
+    const requestedSeed = Number(new URLSearchParams(location.search).get('seed'));
+    this.mapSeed = Number.isFinite(requestedSeed) && requestedSeed !== 0 ? requestedSeed : Math.floor(Math.random() * 0xffffffff);
+    this.mapRandom = this.seededRandom(this.mapSeed);
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x182019);
-    this.scene.fog = new THREE.FogExp2(0x182019, .028);
+    this.scene.fog = new THREE.Fog(0x182019, 10, 36);
     this.camera = new THREE.PerspectiveCamera(68, innerWidth / innerHeight, 0.1, 160);
     this.renderer = new THREE.WebGLRenderer({ canvas: $('#world'), antialias: true });
     this.renderer.setSize(innerWidth, innerHeight);
@@ -89,11 +92,21 @@ class Game {
     $('#role').textContent = `PLAYING AS ${this.role.toUpperCase()}`;
   }
 
+  seededRandom(seed) {
+    return () => {
+      seed |= 0;
+      seed = seed + 0x6d2b79f5 | 0;
+      let value = Math.imul(seed ^ seed >>> 15, 1 | seed);
+      value = value + Math.imul(value ^ value >>> 7, 61 | value) ^ value;
+      return ((value ^ value >>> 14) >>> 0) / 4294967296;
+    };
+  }
+
   clearPosition(minEdge = 7, minDistance = 7) {
     let point;
     const objects = [...this.walls, ...this.generators, ...this.gates, ...this.hooks];
     for (let attempt = 0; attempt < 150; attempt++) {
-      point = vec((Math.random() - .5) * (96 - minEdge * 2), (Math.random() - .5) * (96 - minEdge * 2));
+      point = vec((this.mapRandom() - .5) * (96 - minEdge * 2), (this.mapRandom() - .5) * (96 - minEdge * 2));
       if (!objects.some(object => object.pos.distanceTo(point) < minDistance)) return point;
     }
     // Never block match initialization if procedural placement becomes crowded.
@@ -102,7 +115,7 @@ class Game {
 
   spawnPosition(side = 0) {
     let point = this.clearPosition(14, 7);
-    for (let attempt = 0; attempt < 80 && (this.spawnPositions.some(other => other.distanceTo(point) < 6) || (side && Math.sign(point.x) !== side)); attempt++) point = this.clearPosition(14, 7);
+    for (let attempt = 0; attempt < 120 && (this.spawnPositions.some(other => other.distanceTo(point) < 6) || (side && point.x * side < 20)); attempt++) point = this.clearPosition(14, 7);
     this.spawnPositions.push(point.clone());
     return point;
   }
@@ -119,9 +132,10 @@ class Game {
 
   addTiles() {
     // 22m grid spacing keeps tile footprints from merging into unreadable clusters.
-    const slots = [-30, -8, 14, 36].flatMap(x => [-30, -8, 14].map(z => vec(x, z))).sort(() => Math.random() - .5);
+    const slots = [[-31, -28], [-9, -28], [13, -28], [33, -28], [-31, 3], [13, 3], [-31, 27], [-9, 27], [13, 27], [33, 27]].map(([x, z]) => vec(x, z));
+    for (let index = slots.length - 1; index > 0; index--) { const swap = Math.floor(this.mapRandom() * (index + 1)); [slots[index], slots[swap]] = [slots[swap], slots[index]]; }
     for (let index = 0; index < 10; index++) {
-      const p = slots[index].clone().add(vec((Math.random() - .5) * 4, (Math.random() - .5) * 4));
+      const p = slots[index].clone().add(vec((this.mapRandom() - .5) * 3, (this.mapRandom() - .5) * 3));
       this.tileCenters.push(p.clone());
       const form = index % 5;
       if (form === 0) {
@@ -148,12 +162,12 @@ class Game {
   addScenery() {
     const grassMaterial = new THREE.MeshStandardMaterial({ color: 0x435a36, roughness: 1 });
     for (let index = 0; index < 110; index++) {
-      const pos = vec((Math.random() - .5) * 90, (Math.random() - .5) * 90);
+      const pos = vec((this.mapRandom() - .5) * 90, (this.mapRandom() - .5) * 90);
       if (this.walls.some(wall => wall.pos.distanceTo(pos) < 2)) continue;
-      const tuft = new THREE.Mesh(new THREE.ConeGeometry(.16 + Math.random() * .16, .55 + Math.random() * .45, 4), grassMaterial);
+      const tuft = new THREE.Mesh(new THREE.ConeGeometry(.16 + this.mapRandom() * .16, .55 + this.mapRandom() * .45, 4), grassMaterial);
       tuft.position.copy(pos);
       tuft.position.y = .3;
-      tuft.rotation.y = Math.random() * Math.PI;
+      tuft.rotation.y = this.mapRandom() * Math.PI;
       this.scene.add(tuft);
     }
     const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x30372e, roughness: .95 });
@@ -167,13 +181,6 @@ class Game {
     this.addWall(vec(0, 47.5), 96, 1);
     this.addWall(vec(-47.5, 0), 1, 96);
     this.addWall(vec(47.5, 0), 1, 96);
-    const mistMaterial = new THREE.MeshBasicMaterial({ color: 0xa5b8a0, transparent: true, opacity: .055, depthWrite: false, side: THREE.DoubleSide });
-    for (let index = 0; index < 22; index++) {
-      const bank = new THREE.Mesh(new THREE.PlaneGeometry(10 + Math.random() * 10, 1.8 + Math.random() * 2), mistMaterial);
-      bank.position.set((Math.random() - .5) * 84, .8 + Math.random() * 1.6, (Math.random() - .5) * 84);
-      bank.rotation.y = Math.random() * Math.PI;
-      this.scene.add(bank);
-    }
   }
 
   addWindow(pos, rotation) {
@@ -377,7 +384,7 @@ class Game {
 
   isBlocked(point, actor = null) {
     const actors = [this.killer, ...this.survivors].filter(other => other && other !== actor && other.state === 'active');
-    const solidObjectives = [...this.generators, ...this.hooks].some(object => object.pos.distanceTo(point) < 1.05) || this.gates.some(gate => Math.abs(point.x - gate.pos.x) < 2.8 && Math.abs(point.z - gate.pos.z) < .75);
+    const solidObjectives = [...this.generators, ...this.hooks].some(object => object.pos.distanceTo(point) < 1.05) || this.gates.some(gate => !gate.open && Math.abs(point.x - gate.pos.x) < 2.8 && Math.abs(point.z - gate.pos.z) < .75);
     return Math.abs(point.x) > 47 || Math.abs(point.z) > 47 || solidObjectives || this.walls.some(wall => wall.active && Math.abs(point.x - wall.pos.x) < wall.width / 2 + .42 && Math.abs(point.z - wall.pos.z) < wall.depth / 2 + .42) || actors.some(other => other.pos.distanceTo(point) < .8);
   }
 
@@ -584,6 +591,7 @@ class Game {
   space() {
     if (this.resolveSkill()) return;
     const player = this.player;
+    if (player.type === 'killer' && (player.cooldown > 0 || player.stun > 0 || player.longSwing)) return;
     if (player.type === 'survivor') {
       const window = this.nearest(this.windows, player, 1.8);
       const pallet = this.nearest(this.pallets.filter(item => item.state === 'upright' || item.state === 'dropped'), player, 1.8);
