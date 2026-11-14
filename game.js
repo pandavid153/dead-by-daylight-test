@@ -220,9 +220,11 @@ class Game {
   addObjective(pos, color, type) {
     const mesh = type === 'gate'
       ? new THREE.Mesh(new THREE.BoxGeometry(5, 4.8, .8), new THREE.MeshStandardMaterial({ color, emissive: 0x000000, roughness: .7 }))
-      : new THREE.Mesh(new THREE.CylinderGeometry(.9, .9, 2.25, 8), new THREE.MeshStandardMaterial({ color, emissive: 0x000000, roughness: .7 }));
+      : type === 'hook'
+        ? new THREE.Mesh(new THREE.BoxGeometry(.42, 4.4, .42), new THREE.MeshStandardMaterial({ color: 0x4b4137, metalness: .35, roughness: .75 }))
+        : new THREE.Mesh(new THREE.CylinderGeometry(.9, .9, 2.25, 8), new THREE.MeshStandardMaterial({ color, emissive: 0x000000, roughness: .7 }));
     mesh.position.copy(pos);
-    mesh.position.y = type === 'gate' ? 2.4 : 1.125;
+    mesh.position.y = type === 'gate' ? 2.4 : type === 'hook' ? 2.2 : 1.125;
     if (type === 'generator') {
       const motor = new THREE.Mesh(new THREE.BoxGeometry(1.45, .45, .65), new THREE.MeshStandardMaterial({ color: 0x20251f, roughness: .75 }));
       motor.position.y = .8;
@@ -234,14 +236,16 @@ class Game {
       mesh.pump = pump;
     }
     if (type === 'hook') {
-      mesh.scale.set(.45, 1.8, .45);
       const hookMaterial = new THREE.MeshStandardMaterial({ color: 0x534c43, metalness: .7, roughness: .45 });
-      const arm = new THREE.Mesh(new THREE.BoxGeometry(1.15, .14, .14), hookMaterial);
-      arm.position.set(.45, 2.8, 0);
-      const curve = new THREE.Mesh(new THREE.TorusGeometry(.38, .07, 8, 14, Math.PI * 1.35), hookMaterial);
+      const arm = new THREE.Mesh(new THREE.BoxGeometry(1.35, .16, .16), hookMaterial);
+      arm.position.set(.62, 2.02, 0);
+      const curve = new THREE.Mesh(new THREE.TorusGeometry(.42, .08, 8, 14, Math.PI * 1.35), hookMaterial);
       curve.rotation.set(0, Math.PI / 2, Math.PI * .32);
-      curve.position.set(.95, 2.43, 0);
-      mesh.add(arm, curve);
+      curve.position.set(1.1, 1.62, 0);
+      const brace = new THREE.Mesh(new THREE.BoxGeometry(.9, .14, .14), hookMaterial);
+      brace.rotation.z = -.55;
+      brace.position.set(.35, 1.72, 0);
+      mesh.add(arm, curve, brace);
     }
     if (type === 'gate') {
       [-1.9, 1.9].forEach(x => { const post = new THREE.Mesh(new THREE.BoxGeometry(.35, 5.4, .35), new THREE.MeshStandardMaterial({ color: 0x28231b, roughness: .85 })); post.position.set(x, 0, 0); mesh.add(post); });
@@ -537,7 +541,7 @@ class Game {
       const action = this.startAction('OPENING EXIT GATE', 15, gate, () => { gate.open = true; gate.mesh.material.emissive.set(0x2d9e40); this.sound('gate'); });
       this.progressAction(dt);
     } else if (hooked) {
-      const action = this.startAction('UNHOOKING', 2, hooked, () => { const hook = hooked.hook; hooked.state = 'active'; hook.occupant = null; hooked.hook = null; hooked.pos.copy(player.pos).add(player.pos.clone().sub(hook.pos).normalize().multiplyScalar(1.4)); hooked.nextDecision = 0; hooked.animation = 'idle'; hooked.health = 'injured'; hooked.body.material.emissive.set(0xa32620); this.sound('unhook'); });
+      const action = this.startAction('UNHOOKING', 2, hooked, () => { const hook = hooked.hook; hooked.state = 'active'; hooked.mesh.position.y = 0; hook.occupant = null; hooked.hook = null; hooked.pos.copy(player.pos).add(player.pos.clone().sub(hook.pos).normalize().multiplyScalar(1.4)); hooked.nextDecision = 0; hooked.animation = 'idle'; hooked.health = 'injured'; hooked.body.material.emissive.set(0xa32620); this.sound('unhook'); });
       this.progressAction(dt);
     } else if (dying) {
       const action = this.startAction('REVIVING', 15, dying, () => { dying.health = 'injured'; dying.body.material.emissive.set(0xa32620); });
@@ -722,6 +726,7 @@ class Game {
     survivor.marks++;
     survivor.hookTime = survivor.marks === 2 ? 45 : 90;
     survivor.pos.copy(hook.pos);
+    survivor.mesh.position.y = 1.65;
     survivor.mesh.rotation.z = 0;
     survivor.mesh.visible = true;
     survivor.body.material.emissive.set(0xc6a767);
@@ -765,6 +770,24 @@ class Game {
     return candidates.sort((a, b) => a.score - b.score)[0] || null;
   }
 
+  chooseChasePlan(survivor) {
+    const candidates = [];
+    const add = (target, type, reason) => {
+      const survivorPath = this.findPath(survivor.pos, target.pos);
+      const killerPath = this.findPath(this.killer.pos, target.pos);
+      if (!survivorPath.length || !killerPath.length) return;
+      const boundary = Math.min(46 - Math.abs(target.pos.x), 46 - Math.abs(target.pos.z));
+      if (boundary < 7) return;
+      const teammates = this.survivors.filter(other => other !== survivor && other.state === 'active' && other.pos.distanceTo(target.pos) < 8).length;
+      const blockedSight = !this.canSee(this.killer, { pos: target.pos });
+      const score = killerPath.length * 2.2 - survivorPath.length - teammates * 5 + boundary * .55 + (blockedSight ? 8 : 0) + (type === 'window' ? 7 : 0);
+      candidates.push({ target, type, reason, score, risk: Math.max(0, survivorPath.length - killerPath.length) });
+    };
+    this.tileCenters.forEach(pos => add({ pos }, 'tile', 'interior loop tile'));
+    this.windows.forEach(window => add(window, 'window', 'vault transition'));
+    return candidates.sort((a, b) => b.score - a.score)[0] || null;
+  }
+
   updateAI(dt) {
     this.survivors.filter(item => !item.isPlayer && item.state === 'active').forEach(survivor => {
       if (survivor.health === 'dying') { this.move(survivor, vec(Math.random() - .5, Math.random() - .5), .5, dt); return; }
@@ -775,8 +798,13 @@ class Game {
       }
       const target = survivor.goal?.target;
       if (threat) {
-        const escape = survivor.pos.clone().add(survivor.pos.clone().sub(this.killer.pos).normalize().multiplyScalar(16));
-        this.navigate(survivor, escape, 4, dt);
+        if (!survivor.chasePlan || this.time > survivor.chaseUntil || survivor.chasePlan.target.pos.distanceTo(survivor.pos) < 2) {
+          survivor.chasePlan = this.chooseChasePlan(survivor);
+          survivor.chaseUntil = this.time + 2.2;
+        }
+        const plan = survivor.chasePlan;
+        if (plan?.type === 'window' && survivor.pos.distanceTo(plan.target.pos) < 1.8 && !survivor.vaulting) this.vault(survivor, plan.target, 1);
+        else if (plan) this.navigate(survivor, plan.target.pos, 4, dt);
       }
       else if (target) {
         const direction = target.pos.clone().sub(survivor.pos);
@@ -787,7 +815,7 @@ class Game {
             target.worker = survivor;
             this.aiTimedAction(survivor, target, 15, () => { target.open = true; target.worker = null; target.mesh.material.emissive.set(0x2d9e40); this.sound('gate'); }, dt);
           }
-        } else if (target.state === 'hooked') this.aiTimedAction(survivor, target, 2, () => { const hook = target.hook; target.state = 'active'; hook.occupant = null; target.hook = null; target.pos.copy(survivor.pos).add(survivor.pos.clone().sub(hook.pos).normalize().multiplyScalar(1.4)); target.nextDecision = 0; target.health = 'injured'; target.body.material.emissive.set(0xa32620); this.sound('unhook'); }, dt);
+        } else if (target.state === 'hooked') this.aiTimedAction(survivor, target, 2, () => { const hook = target.hook; target.state = 'active'; target.mesh.position.y = 0; hook.occupant = null; target.hook = null; target.pos.copy(survivor.pos).add(survivor.pos.clone().sub(hook.pos).normalize().multiplyScalar(1.4)); target.nextDecision = 0; target.health = 'injured'; target.body.material.emissive.set(0xa32620); this.sound('unhook'); }, dt);
         else if (target.health === 'dying') this.aiTimedAction(survivor, target, 15, () => { target.health = 'injured'; target.body.material.emissive.set(0xa32620); }, dt);
         else if (target.health === 'injured') this.aiTimedAction(survivor, target, 25, () => { target.health = 'healthy'; target.body.material.emissive.set(0x5197a4); }, dt);
       }
@@ -911,7 +939,7 @@ class Game {
     $('#prompt').textContent = this.player.state === 'hooked' ? 'ON HOOK: survive until rescued' : this.player.state === 'carried' ? 'WIGGLING FREE...' : nearby;
     $('#roster').innerHTML = this.survivors.map(survivor => `<div class="card ${survivor.health} ${survivor.state}">${survivor.state === 'dead' ? '☠' : survivor.state === 'hooked' ? '⚓' : survivor.state === 'dying' ? '▰' : survivor.name[0]}<span class="marks">${'◆'.repeat(survivor.marks)}</span>${survivor.state === 'hooked' ? `<i class="hookbar" style="width:${survivor.hookTime / 90 * 100}%"></i>` : ''}</div>`).join('');
     const goalName = goal => goal?.target?.type === 'generator' ? `GEN ${goal.target.id}` : goal?.target?.name || goal?.target?.type || 'none';
-    const goals = this.survivors.filter(survivor => !survivor.isPlayer).map(survivor => `${survivor.name}: ${goalName(survivor.goal)} - ${survivor.goal?.reason || 'idle'}`);
+    const goals = this.survivors.filter(survivor => !survivor.isPlayer).map(survivor => survivor.chasePlan && this.killer.pos.distanceTo(survivor.pos) < 10 ? `${survivor.name}: CHASE ${survivor.chasePlan.type} - ${survivor.chasePlan.reason}, risk ${survivor.chasePlan.risk}` : `${survivor.name}: ${goalName(survivor.goal)} - ${survivor.goal?.reason || 'idle'}`);
     $('#ai-debug').innerHTML = `<b>BOT GOALS</b><br>${goals.join('<br>')}`;
   }
 
