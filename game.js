@@ -73,6 +73,7 @@ class Game {
     this.scene.add(boundary);
     this.addTiles();
     this.addObjectives();
+    this.addScenery();
     NAMES.forEach((name, index) => this.makeSurvivor(name, index));
     this.makeKiller();
     this.player = this.role === 'killer' ? this.killer : this.survivors[0];
@@ -99,9 +100,9 @@ class Game {
     return point;
   }
 
-  spawnPosition() {
+  spawnPosition(side = 0) {
     let point = this.clearPosition(14, 7);
-    for (let attempt = 0; attempt < 40 && this.spawnPositions.some(other => other.distanceTo(point) < 6); attempt++) point = this.clearPosition(14, 7);
+    for (let attempt = 0; attempt < 80 && (this.spawnPositions.some(other => other.distanceTo(point) < 6) || (side && Math.sign(point.x) !== side)); attempt++) point = this.clearPosition(14, 7);
     this.spawnPositions.push(point.clone());
     return point;
   }
@@ -141,6 +142,25 @@ class Game {
       this.addWindow(p.clone().add(vec(4.5, 0)), index % 2 === 0 ? 0 : Math.PI / 2);
       this.addPallet(p.clone().add(vec(-4.5, 0)), index % 2 === 0 ? 0 : Math.PI / 2);
     }
+  }
+
+  addScenery() {
+    const grassMaterial = new THREE.MeshStandardMaterial({ color: 0x435a36, roughness: 1 });
+    for (let index = 0; index < 110; index++) {
+      const pos = vec((Math.random() - .5) * 90, (Math.random() - .5) * 90);
+      if (this.walls.some(wall => wall.pos.distanceTo(pos) < 2)) continue;
+      const tuft = new THREE.Mesh(new THREE.ConeGeometry(.16 + Math.random() * .16, .55 + Math.random() * .45, 4), grassMaterial);
+      tuft.position.copy(pos);
+      tuft.position.y = .3;
+      tuft.rotation.y = Math.random() * Math.PI;
+      this.scene.add(tuft);
+    }
+    const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x30372e, roughness: .95 });
+    [[-46, -46], [46, -46], [-46, 46], [46, 46]].forEach(([x, z]) => {
+      const corner = new THREE.Mesh(new THREE.BoxGeometry(5, 3.5, 5), wallMaterial);
+      corner.position.set(x, 1.75, z);
+      this.scene.add(corner);
+    });
   }
 
   addWindow(pos, rotation) {
@@ -224,7 +244,7 @@ class Game {
       const gate = this.addObjective(vec(x, z), 0x876331, 'gate');
       Object.assign(gate, { progress: 0, open: false });
       gate.aura.material.color.set(0xa04a39);
-      gate.aura.visible = true;
+      gate.aura.visible = this.role === 'killer';
       this.gates.push(gate);
     });
     for (let index = 0; index < 16; index++) {
@@ -264,13 +284,13 @@ class Game {
   }
 
   makeSurvivor(name, index) {
-    const survivor = this.makeActor(name, 0x5197a4, this.spawnPosition(), 'survivor');
+    const survivor = this.makeActor(name, 0x5197a4, this.spawnPosition(-1), 'survivor');
     survivor.isPlayer = this.role === 'survivor' && index === 0;
     this.survivors.push(survivor);
   }
 
   makeKiller() {
-    this.killer = this.makeActor('The Hunter', 0x9d382e, this.spawnPosition(), 'killer');
+    this.killer = this.makeActor('The Hunter', 0x9d382e, this.spawnPosition(1), 'killer');
     this.killer.isPlayer = this.role === 'killer';
   }
 
@@ -346,6 +366,17 @@ class Game {
     const actors = [this.killer, ...this.survivors].filter(other => other && other !== actor && other.state === 'active');
     const solidObjectives = [...this.generators, ...this.hooks].some(object => object.pos.distanceTo(point) < 1.05) || this.gates.some(gate => Math.abs(point.x - gate.pos.x) < 2.8 && Math.abs(point.z - gate.pos.z) < .75);
     return Math.abs(point.x) > 47 || Math.abs(point.z) > 47 || solidObjectives || this.walls.some(wall => wall.active && Math.abs(point.x - wall.pos.x) < wall.width / 2 + .42 && Math.abs(point.z - wall.pos.z) < wall.depth / 2 + .42) || actors.some(other => other.pos.distanceTo(point) < .8);
+  }
+
+  canSee(observer, target) {
+    const distance = observer.pos.distanceTo(target.pos);
+    if (distance > 24) return false;
+    const steps = Math.ceil(distance / .6);
+    for (let step = 1; step < steps; step++) {
+      const point = observer.pos.clone().lerp(target.pos, step / steps);
+      if (this.walls.some(wall => wall.active && Math.abs(point.x - wall.pos.x) < wall.width / 2 && Math.abs(point.z - wall.pos.z) < wall.depth / 2)) return false;
+    }
+    return true;
   }
 
   moveToward(actor, target, speed, dt) {
@@ -483,7 +514,7 @@ class Game {
     generator.aura.visible = false;
     generator.mesh.material.emissive.set(0xd2b039);
     this.completed++;
-    if (this.completed >= 5) this.gates.forEach(gate => { gate.aura.material.color.set(0xd0b143); gate.aura.visible = true; });
+    if (this.completed >= 5) this.gates.forEach(gate => { gate.aura.material.color.set(0xd0b143); gate.aura.visible = this.role === 'killer'; });
     setTimeout(() => { if (generator.done) generator.mesh.material.emissive.set(0x000000); }, 3000);
   }
 
@@ -593,7 +624,7 @@ class Game {
     this.sound('pickup');
     this.killer.animationTime = 0;
     this.hooks.forEach(hook => hook.mesh.material.emissive.set(0x8d793d));
-    this.hooks.forEach(hook => { hook.aura.material.color.set(0xd6af53); hook.aura.visible = true; });
+    this.hooks.forEach(hook => { hook.aura.material.color.set(0xd6af53); hook.aura.visible = this.role === 'killer'; });
   }
 
   hookSurvivor(survivor, hook) {
@@ -664,10 +695,13 @@ class Game {
       if (this.killer.carrying) { const hook = this.hooks.filter(item => !item.occupant).sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0]; if (hook) { this.moveToward(this.killer, hook.pos, 3, dt); if (hook.pos.distanceTo(this.killer.pos) < 1.8) this.hookSurvivor(this.killer.carrying, hook); } return; }
       const dying = this.nearest(this.survivors.filter(item => item.health === 'dying' && item.state === 'active'), this.killer);
       if (dying) { this.moveToward(this.killer, dying.pos, 4.6, dt); if (dying.pos.distanceTo(this.killer.pos) < 1.7) this.carrySurvivor(dying); return; }
-      const target = this.survivors.filter(item => item.state === 'active').sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0];
+      const target = this.survivors.filter(item => item.state === 'active' && this.canSee(this.killer, item)).sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0];
+      if (target) this.killer.lastKnown = target.pos.clone();
       const activeGenerator = this.generators.filter(item => !item.done && (item.alert > 0 || item.workers?.length)).sort((a, b) => b.progress - a.progress)[0];
       if (activeGenerator && target && target.pos.distanceTo(this.killer.pos) > 18 && Math.random() < dt * .8) this.moveToward(this.killer, activeGenerator.pos, 4.6, dt);
       else if (target) { this.moveToward(this.killer, target.pos, 4.6, dt); if (target.pos.distanceTo(this.killer.pos) < 2.1) this.hit(target); }
+      else if (this.killer.lastKnown && this.killer.pos.distanceTo(this.killer.lastKnown) > 1.5) this.moveToward(this.killer, this.killer.lastKnown, 4.2, dt);
+      else if (activeGenerator) this.moveToward(this.killer, activeGenerator.pos, 4.2, dt);
     }
   }
 
