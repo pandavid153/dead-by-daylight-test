@@ -22,7 +22,7 @@ class Game {
     this.role = role;
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x182019);
-    this.scene.fog = new THREE.Fog(0x182019, 16, 58);
+    this.scene.fog = new THREE.Fog(0x182019, 14, 50);
     this.camera = new THREE.PerspectiveCamera(68, innerWidth / innerHeight, 0.1, 160);
     this.renderer = new THREE.WebGLRenderer({ canvas: $('#world'), antialias: true });
     this.renderer.setSize(innerWidth, innerHeight);
@@ -50,6 +50,7 @@ class Game {
     this.traces = [];
     this.spawnPositions = [];
     this.tileCenters = [];
+    this.audioContext = null;
     this.setupWorld();
     this.setupInput();
   }
@@ -281,6 +282,7 @@ class Game {
     canvas.addEventListener('mousedown', event => {
       if (event.button !== 0) return;
       canvas.requestPointerLock();
+      this.enableAudio();
       this.holdAction = true;
       this.mouseDownAt = performance.now();
       if (this.player.type === 'killer') setTimeout(() => { if (this.holdAction && this.player.cooldown <= 0) this.startLongSwing(); }, 660);
@@ -298,18 +300,47 @@ class Game {
     });
   }
 
+  enableAudio() {
+    if (!this.audioContext) this.audioContext = new AudioContext();
+    if (this.audioContext.state === 'suspended') this.audioContext.resume();
+  }
+
+  sound(type) {
+    if (!this.audioContext || this.audioContext.state !== 'running') return;
+    const settings = {
+      step: [95, .035, 'triangle'], swing: [150, .12, 'sawtooth'], hit: [65, .22, 'square'],
+      pickup: [105, .18, 'triangle'], hook: [52, .28, 'sawtooth'], vault: [240, .1, 'triangle'],
+      pallet: [70, .18, 'square'], repair: [180, .045, 'square'], fail: [360, .22, 'sawtooth'],
+      generator: [82, .12, 'square'], moan: [130, .2, 'sine'], stun: [48, .25, 'sawtooth']
+    }[type];
+    if (!settings) return;
+    const [frequency, duration, wave] = settings;
+    const oscillator = this.audioContext.createOscillator();
+    const gain = this.audioContext.createGain();
+    oscillator.type = wave;
+    oscillator.frequency.setValueAtTime(frequency, this.audioContext.currentTime);
+    oscillator.frequency.exponentialRampToValueAtTime(Math.max(30, frequency * .55), this.audioContext.currentTime + duration);
+    gain.gain.setValueAtTime(.055, this.audioContext.currentTime);
+    gain.gain.exponentialRampToValueAtTime(.001, this.audioContext.currentTime + duration);
+    oscillator.connect(gain).connect(this.audioContext.destination);
+    oscillator.start();
+    oscillator.stop(this.audioContext.currentTime + duration);
+  }
+
   move(actor, direction, speed, dt) {
     if (actor.state !== 'active' || actor.stun > 0 || !direction.length()) return false;
     const next = actor.pos.clone().addScaledVector(direction.normalize(), speed * dt);
-    if (this.isBlocked(next)) return false;
+    if (this.isBlocked(next, actor)) return false;
     actor.pos.copy(next);
     actor.mesh.rotation.y = Math.atan2(direction.x, direction.z);
     actor.walking = true;
+    if (actor === this.player && actor.type === 'killer' && (!actor.lastStep || this.time - actor.lastStep > .42)) { actor.lastStep = this.time; this.sound('step'); }
     return true;
   }
 
-  isBlocked(point) {
-    return Math.abs(point.x) > 47 || Math.abs(point.z) > 47 || this.walls.some(wall => wall.active && Math.abs(point.x - wall.pos.x) < wall.width / 2 + .42 && Math.abs(point.z - wall.pos.z) < wall.depth / 2 + .42);
+  isBlocked(point, actor = null) {
+    const actors = [this.killer, ...this.survivors].filter(other => other && other !== actor && other.state === 'active');
+    return Math.abs(point.x) > 47 || Math.abs(point.z) > 47 || this.walls.some(wall => wall.active && Math.abs(point.x - wall.pos.x) < wall.width / 2 + .42 && Math.abs(point.z - wall.pos.z) < wall.depth / 2 + .42) || actors.some(other => other.pos.distanceTo(point) < .8);
   }
 
   moveToward(actor, target, speed, dt) {
@@ -352,6 +383,7 @@ class Game {
     mesh.position.y = .025;
     this.scene.add(mesh);
     this.traces.push({ mesh, time: 5 });
+    if (type === 'foot' && survivor === this.player) this.sound('step');
   }
 
   nearest(list, actor, radius = 2) { return list.filter(item => item.pos.distanceTo(actor.pos) < radius).sort((a, b) => a.pos.distanceTo(actor.pos) - b.pos.distanceTo(actor.pos))[0]; }
@@ -393,7 +425,7 @@ class Game {
       const action = this.startAction('OPENING EXIT GATE', 15, gate, () => { gate.open = true; gate.mesh.material.emissive.set(0x2d9e40); });
       this.progressAction(dt);
     } else if (hooked) {
-      const action = this.startAction('UNHOOKING', 2, hooked, () => { hooked.state = 'active'; hooked.health = 'injured'; hooked.body.material.emissive.set(0xa32620); });
+      const action = this.startAction('UNHOOKING', 2, hooked, () => { hooked.state = 'active'; hooked.hook.occupant = null; hooked.hook = null; hooked.health = 'injured'; hooked.body.material.emissive.set(0xa32620); });
       this.progressAction(dt);
     } else if (dying) {
       const action = this.startAction('REVIVING', 15, dying, () => { dying.health = 'injured'; dying.body.material.emissive.set(0xa32620); });
@@ -409,6 +441,7 @@ class Game {
     const workers = this.survivors.filter(item => item.state === 'active' && item.pos.distanceTo(generator.pos) < 2 && item.repairing === generator);
     if (!workers.includes(survivor)) workers.push(survivor);
     generator.workers = workers;
+    if (survivor === this.player && (!generator.lastSound || this.time - generator.lastSound > .7)) { generator.lastSound = this.time; this.sound('repair'); }
     survivor.repairing = generator;
     survivor.animation = 'repair';
     const rate = (1 + .15 * Math.min(2, workers.length - 1)) / 100;
@@ -430,7 +463,7 @@ class Game {
     const success = skill.elapsed >= skill.zone && skill.elapsed <= skill.zone + .2;
     if (skill.type === 'generator') {
       skill.generator.progress = clamp(skill.generator.progress + (success ? .02 : -.1), 0, 1);
-      if (!success) { skill.generator.alert = 3; skill.generator.mesh.material.emissive.set(0xc74a28); }
+      if (!success) { skill.generator.alert = 3; skill.generator.mesh.material.emissive.set(0xc74a28); this.sound('fail'); }
       skill.generator.nextSkill = 5 + Math.random() * 6;
     } else if (!success) skill.hooked.hookTime = Math.max(0, skill.hooked.hookTime - 7);
     this.skill = null;
@@ -441,6 +474,7 @@ class Game {
   completeGenerator(generator) {
     if (generator.done) return;
     generator.done = true;
+    this.sound('generator');
     generator.aura.visible = false;
     generator.mesh.material.emissive.set(0xd2b039);
     this.completed++;
@@ -460,12 +494,14 @@ class Game {
       return;
     }
     const carried = player.carrying;
-    const hook = this.nearest(this.hooks, player);
+    const hook = this.nearest(this.hooks.filter(item => !item.occupant), player);
     const dying = this.nearest(this.survivors.filter(item => item.health === 'dying' && item.state === 'active'), player);
+    const generator = this.nearest(this.generators.filter(item => !item.done && item.progress > 0), player);
     const pallet = this.nearest(this.pallets.filter(item => item.state === 'dropped'), player);
     const window = this.nearest(this.windows, player, 1.8);
     if (carried && hook) this.startAction('HOOKING SURVIVOR', 2, hook, () => this.hookSurvivor(carried, hook));
     else if (dying) this.pickup(dying);
+    else if (generator) this.startAction('DAMAGING GENERATOR', 2, generator, () => { generator.progress = Math.max(0, generator.progress - .1); generator.alert = 1; this.sound('generator'); });
     else if (pallet) this.breakPallet(pallet);
     else if (window) this.vault(player, window, 1.5);
   }
@@ -474,6 +510,7 @@ class Game {
     if (actor.vaulting || actor.state !== 'active') return;
     actor.vaulting = true;
     actor.stun = seconds;
+    if (actor === this.player) this.sound('vault');
     const direction = vec(Math.sin(window.rotation), Math.cos(window.rotation));
     setTimeout(() => {
       const distance = actor.type === 'killer' ? 1.7 : 2.2;
@@ -490,7 +527,8 @@ class Game {
     pallet.mesh.rotation.y = pallet.rotation;
     pallet.wall = { pos: pallet.pos, width: pallet.rotation ? .75 : 2.4, depth: pallet.rotation ? 2.4 : .75, active: true };
     this.walls.push(pallet.wall);
-    if (this.killer.pos.distanceTo(pallet.pos) < 2.1) this.killer.stun = 2;
+    this.sound('pallet');
+    if (this.killer.pos.distanceTo(pallet.pos) < 2.1) { this.killer.stun = 2; this.sound('stun'); }
   }
 
   breakPallet(pallet) {
@@ -501,6 +539,7 @@ class Game {
     const killer = this.killer;
     if (killer.cooldown > 0 || killer.stun > 0) return;
     killer.animation = 'swing';
+    this.sound('swing');
     killer.animationTime = 0;
     const target = this.nearest(this.survivors.filter(item => item.state === 'active'), killer, 2.3);
     if (target) this.hit(target);
@@ -520,6 +559,7 @@ class Game {
     if (!survivor || killer.cooldown > 0) return;
     killer.cooldown = 2;
     survivor.animation = 'flinch';
+    this.sound('hit');
     survivor.animationTime = 0;
     survivor.healProgress = 0;
     if (survivor.health === 'healthy') {
@@ -541,16 +581,21 @@ class Game {
     survivor.mesh.visible = false;
     survivor.wiggle = 0;
     this.killer.animation = 'carry';
+    this.sound('pickup');
     this.killer.animationTime = 0;
     this.hooks.forEach(hook => hook.mesh.material.emissive.set(0x8d793d));
     this.hooks.forEach(hook => { hook.aura.material.color.set(0xd6af53); hook.aura.visible = true; });
   }
 
   hookSurvivor(survivor, hook) {
+    if (hook.occupant) return;
     this.killer.carrying = null;
     this.killer.animation = 'hook';
+    this.sound('hook');
     this.killer.animationTime = 0;
     survivor.state = 'hooked';
+    survivor.hook = hook;
+    hook.occupant = survivor;
     survivor.marks++;
     survivor.hookTime = survivor.marks === 2 ? 45 : 90;
     survivor.pos.copy(hook.pos);
@@ -586,17 +631,19 @@ class Game {
         if (direction.length() > 1.7) this.moveToward(survivor, target.pos, 4, dt);
         else if (target.type === 'generator') this.repair(target, survivor, dt);
         else if (target.type === 'gate') { target.progress += dt / 15; if (target.progress >= 1) { target.open = true; target.mesh.material.emissive.set(0x2d9e40); } }
-        else if (target.state === 'hooked') { target.state = 'active'; target.health = 'injured'; target.body.material.emissive.set(0xa32620); }
+        else if (target.state === 'hooked') { target.state = 'active'; target.hook.occupant = null; target.hook = null; target.health = 'injured'; target.body.material.emissive.set(0xa32620); }
         else if (target.health === 'dying') { target.health = 'injured'; target.body.material.emissive.set(0xa32620); }
         else if (target.health === 'injured') { target.health = 'healthy'; target.body.material.emissive.set(0x5197a4); }
       }
     });
     if (!this.killer.isPlayer && this.killer.state === 'active') {
-      if (this.killer.carrying) { const hook = this.hooks.sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0]; this.moveToward(this.killer, hook.pos, 3, dt); if (hook.pos.distanceTo(this.killer.pos) < 1.8) this.hookSurvivor(this.killer.carrying, hook); return; }
+      if (this.killer.carrying) { const hook = this.hooks.filter(item => !item.occupant).sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0]; if (hook) { this.moveToward(this.killer, hook.pos, 3, dt); if (hook.pos.distanceTo(this.killer.pos) < 1.8) this.hookSurvivor(this.killer.carrying, hook); } return; }
       const dying = this.nearest(this.survivors.filter(item => item.health === 'dying' && item.state === 'active'), this.killer);
       if (dying) { this.moveToward(this.killer, dying.pos, 4.6, dt); if (dying.pos.distanceTo(this.killer.pos) < 1.7) this.carrySurvivor(dying); return; }
       const target = this.survivors.filter(item => item.state === 'active').sort((a, b) => a.pos.distanceTo(this.killer.pos) - b.pos.distanceTo(this.killer.pos))[0];
-      if (target) { this.moveToward(this.killer, target.pos, 4.6, dt); if (target.pos.distanceTo(this.killer.pos) < 2.1) this.hit(target); }
+      const activeGenerator = this.generators.filter(item => !item.done && (item.alert > 0 || item.workers?.length)).sort((a, b) => b.progress - a.progress)[0];
+      if (activeGenerator && target && target.pos.distanceTo(this.killer.pos) > 18 && Math.random() < dt * .8) this.moveToward(this.killer, activeGenerator.pos, 4.6, dt);
+      else if (target) { this.moveToward(this.killer, target.pos, 4.6, dt); if (target.pos.distanceTo(this.killer.pos) < 2.1) this.hit(target); }
     }
   }
 
@@ -626,7 +673,10 @@ class Game {
 
   updateStates(dt) {
     this.survivors.forEach(survivor => {
-      if (survivor.health === 'injured' && survivor.state === 'active') this.leaveTrace(survivor, 'blood');
+      if (survivor.health === 'injured' && survivor.state === 'active') {
+        this.leaveTrace(survivor, 'blood');
+        if (!survivor.lastMoan || this.time - survivor.lastMoan > 5 + Math.random() * 4) { survivor.lastMoan = this.time; this.sound('moan'); }
+      }
       if (survivor.state === 'carried') {
         survivor.wiggle += dt / 16;
         if (survivor.wiggle >= 1) { survivor.state = 'active'; survivor.health = 'injured'; survivor.mesh.visible = true; survivor.pos.copy(this.killer.pos).add(vec(2, 0)); this.killer.carrying = null; this.killer.stun = 2; }
@@ -643,7 +693,7 @@ class Game {
             $('#skill').hidden = false;
           }
         }
-        if (survivor.hookTime <= 0 || survivor.marks >= 3) { survivor.state = 'dead'; survivor.mesh.visible = false; }
+        if (survivor.hookTime <= 0 || survivor.marks >= 3) { if (survivor.hook) survivor.hook.occupant = null; survivor.hook = null; survivor.state = 'dead'; survivor.mesh.visible = false; }
       }
     });
     [this.killer, ...this.survivors].forEach(actor => { this.animateActor(actor, dt); actor.walking = false; });
@@ -666,9 +716,9 @@ class Game {
       }
       return;
     }
-    const cameraPos = this.player.pos.clone().addScaledVector(forward, -6.5).add(new THREE.Vector3(0, 1.9, 0));
+    const cameraPos = this.player.pos.clone().addScaledVector(forward, -4.1).add(new THREE.Vector3(0, 3.05, 0));
     this.camera.position.copy(cameraPos);
-    this.camera.lookAt(this.player.pos.clone().addScaledVector(forward, 3.5).add(new THREE.Vector3(0, 1.4 + this.pitch * 1.2, 0)));
+    this.camera.lookAt(this.player.pos.clone().addScaledVector(forward, 5.4).add(new THREE.Vector3(0, 1.75 + this.pitch * 1.2, 0)));
   }
 
   updateUI() {
