@@ -7,12 +7,15 @@ extends CharacterBody3D
 var destination := Vector3.ZERO
 var has_destination := false
 var yaw := 0.0
+var health_state := 2
+var recovery := 0.0
 
 func set_destination(point: Vector3) -> void:
 	destination = point
 	has_destination = true
 
 func _physics_process(_delta: float) -> void:
+	recovery = maxf(0.0, recovery - _delta)
 	if controlled:
 		var input := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 		var direction := Vector3(input.x, 0.0, input.y)

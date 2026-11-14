@@ -8,6 +8,11 @@ var rng := RandomNumberGenerator.new()
 var player: MatchAgent
 var generators: Array[Node3D] = []
 var hooks: Array[Node3D] = []
+var survivors: Array[MatchAgent] = []
+var killer: MatchAgent
+var hud: Label
+var repaired := 0
+var match_over := false
 
 func _ready() -> void:
 	rng.seed = 101
@@ -17,6 +22,39 @@ func _ready() -> void:
 	_build_tiles()
 	_build_objectives()
 	_spawn_team()
+	_build_hud()
+
+func _process(delta: float) -> void:
+	if match_over:
+		_update_hud()
+		return
+	for index in generators.size():
+		var generator := generators[index]
+		var workers := survivors.filter(func(survivor): return survivor.global_position.distance_to(generator.global_position) < 2.0 and survivor.has_destination == false)
+		if workers.size() > 0 and generator.get_meta("done") == false:
+			var progress: float = generator.get_meta("progress")
+			progress = minf(1.0, progress + delta * (1.0 + .15 * (workers.size() - 1)) / 100.0)
+			generator.set_meta("progress", progress)
+			if progress >= 1.0:
+				generator.set_meta("done", true)
+				repaired += 1
+	if Input.is_key_pressed(KEY_E):
+		_repair_nearest(delta)
+	_update_killer(delta)
+	_update_hud()
+
+func _update_killer(_delta: float) -> void:
+	if killer.recovery > 0.0:
+		return
+	var distance := killer.global_position.distance_to(player.global_position)
+	if distance > 1.8:
+		killer.set_destination(player.global_position)
+		return
+	killer.has_destination = false
+	killer.recovery = 2.0
+	player.health_state -= 1
+	if player.health_state <= 0:
+		match_over = true
 
 func _build_lighting() -> void:
 	var world := WorldEnvironment.new()
@@ -78,6 +116,8 @@ func _add_window_wall(center: Vector3, rotation_y: float) -> void:
 func _build_objectives() -> void:
 	for point in [Vector3(-25, 0, -10), Vector3(-10, 0, 16), Vector3(8, 0, -17), Vector3(25, 0, 8), Vector3(4, 0, 28), Vector3(-29, 0, 25), Vector3(28, 0, -28)]:
 		var generator := _add_box(Vector3(1.7, 2.1, 1.2), point + Vector3(0, 1.05, 0), Color("526b59"), true)
+		generator.set_meta("progress", 0.0)
+		generator.set_meta("done", false)
 		generators.append(generator)
 	for point in [Vector3(-40, 0, -35), Vector3(40, 0, 35)]:
 		_add_box(Vector3(5.0, 4.8, 0.8), point + Vector3(0, 2.4, 0), Color("876331"), true)
@@ -87,13 +127,44 @@ func _build_objectives() -> void:
 func _spawn_team() -> void:
 	player = _make_agent(Vector3(-33, 0.5, -14), false, Color("55a1ae"))
 	player.controlled = true
-	for point in [Vector3(-31, .5, 0), Vector3(-30, .5, 14), Vector3(-28, .5, 27)]:
-		_make_agent(point, false, Color("5796a4"))
-	_make_agent(Vector3(33, .5, 0), true, Color("a63c32"))
+	survivors.append(player)
+	for index in 3:
+		var points := [Vector3(-31, .5, 0), Vector3(-30, .5, 14), Vector3(-28, .5, 27)]
+		var bot := _make_agent(points[index], false, Color("5796a4"))
+		bot.set_destination(generators[index].global_position)
+		survivors.append(bot)
+	killer = _make_agent(Vector3(33, .5, 0), true, Color("a63c32"))
 	var camera := Camera3D.new()
 	camera.position = Vector3(0, 2.8, 5.0)
 	camera.rotation_degrees = Vector3(-12, 180, 0)
 	player.add_child(camera)
+
+func _build_hud() -> void:
+	var layer := CanvasLayer.new()
+	hud = Label.new()
+	hud.position = Vector2(24, 20)
+	hud.add_theme_font_size_override("font_size", 22)
+	layer.add_child(hud)
+	add_child(layer)
+
+func _repair_nearest(delta: float) -> void:
+	var nearest: Node3D
+	var distance := 2.1
+	for generator in generators:
+		var candidate := player.global_position.distance_to(generator.global_position)
+		if candidate < distance and generator.get_meta("done") == false:
+			nearest = generator
+			distance = candidate
+	if nearest:
+		var progress: float = nearest.get_meta("progress")
+		nearest.set_meta("progress", minf(1.0, progress + delta / 100.0))
+
+func _update_hud() -> void:
+	var nearby: float = INF
+	for generator in generators:
+		nearby = minf(nearby, player.global_position.distance_to(generator.global_position))
+	var state := "DYING" if player.health_state <= 0 else "INJURED" if player.health_state == 1 else "HEALTHY"
+	hud.text = "GODOT PROTOTYPE\nGENERATORS: %d / 5\nSTATE: %s\nWASD move | Shift sprint | Hold E near a generator\nNearest generator: %.1fm%s" % [repaired, state, nearby, "\nTHE KILLER PREVAILED" if match_over else ""]
 
 func _make_agent(position: Vector3, killer: bool, color: Color) -> MatchAgent:
 	var agent := MatchAgent.new()
